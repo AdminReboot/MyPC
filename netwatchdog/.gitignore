@@ -1,0 +1,6 @@
+# Cấu hình cá nhân (chứa bot token) và trạng thái chạy — KHÔNG commit
+config.json
+state.json
+*.tmp
+logs/
+__pycache__/

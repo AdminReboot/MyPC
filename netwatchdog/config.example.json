@@ -1,0 +1,33 @@
+{
+  "machine_name": "",
+  "telegram": {
+    "bot_token": "",
+    "chat_id": "",
+    "commands": true
+  },
+  "check": {
+    "targets": ["1.1.1.1:53", "8.8.8.8:53", "208.67.222.222:443"],
+    "http_url": "http://www.msftconnecttest.com/connecttest.txt",
+    "interval_sec": 30,
+    "fail_threshold": 3,
+    "timeout_sec": 4
+  },
+  "recovery": {
+    "wifi_profiles": [],
+    "wifi_interface": "",
+    "adapters": [],
+    "wait_after_action_sec": 25,
+    "rounds": 2,
+    "retry_cooldown_min": 10,
+    "reboot_enabled": true,
+    "reboot_delay_sec": 60,
+    "max_reboots_per_day": 3,
+    "min_uptime_before_reboot_min": 15
+  },
+  "apps": [],
+  "launch_apps": "after_reboot",
+  "report": {
+    "heartbeat_min": 360,
+    "public_ip": true
+  }
+}
