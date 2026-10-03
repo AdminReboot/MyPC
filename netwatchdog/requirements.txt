@@ -1,1 +1,2 @@
 psutil>=5.9
+pywinauto>=0.6.8   # jxtdAuto: UI Automation (pulls pywin32, comtypes)
