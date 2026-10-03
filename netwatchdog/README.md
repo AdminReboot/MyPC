@@ -9,6 +9,8 @@ Chương trình chạy nền trên Windows 10/11. Nó kiểm tra Internet địn
 
 Mọi sự kiện được **báo lên Telegram**: mất mạng, đã thử những gì, có mạng lại (mất bao lâu, khôi phục bằng cách nào), khởi động lại máy, ứng dụng đã mở. Tin phát sinh lúc mất mạng được lưu ra đĩa và **gửi bù khi có mạng**, kể cả sau khi khởi động lại máy. Ngoài ra có báo cáo định kỳ: uptime, CPU, RAM, ổ đĩa, pin, Wi-Fi, IP LAN/WAN.
 
+Tùy chọn **theo dõi jxtdAuto** (tool auto Võ Lâm): báo cáo các nhân vật và cảnh báo khi có sự cố, xem [bên dưới](#theo-dõi-jxtdauto).
+
 ## Cài đặt
 
 1. Tải **`NetWatchdog-Setup-x.y.z.exe`** ở trang [Releases](https://github.com/AdminReboot/MyPC/releases/latest) và chạy (cần quyền Administrator). Không cần cài Python.
@@ -50,6 +52,18 @@ Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình:
 | `/fix` | Chạy quy trình khôi phục mạng ngay |
 | `/reboot yes` | Khởi động lại máy sau 30 giây |
 | `/cancel` | Hủy lệnh khởi động lại đang chờ |
+| `/jx` | Bảng nhân vật jxtdAuto lúc này (khi đã bật theo dõi) |
+
+## Theo dõi jxtdAuto
+
+Bật ở trang **jxtdAuto** trong cửa sổ Cài đặt (mặc định tắt). NetWatchdog **chỉ đọc** bảng nhân vật trong cửa sổ jxtdAuto qua lớp trợ năng của Windows (UI Automation): không bấm, không gõ, không đổi cài đặt, không đọc/ghi bộ nhớ của jxtdAuto hay game.
+
+- Mỗi 60 giây đọc đủ các cột: tác vụ, EXP/giờ, thu nhập, ngân lượng, cấp/EXP, phù/chết, thẻ tháng, ô tick. Lịch sử lưu ở `jxtd_history\YYYY-MM-DD.csv` trong thư mục dữ liệu (giữ 90 ngày, mở được bằng Excel).
+- Báo cáo định kỳ (mặc định 60 phút), một lần khi khởi động, và khi gửi `/jx`.
+- Cảnh báo ngay khi: jxtdAuto bị tắt / không thấy cửa sổ (nhắc lại mỗi 30 phút); nhân vật biến khỏi danh sách hoặc bị bỏ tick; thu nhập chuyển sang âm; tác vụ thay đổi (kể cả đứng im, tin kèm đầy đủ thông tin nhân vật); số lần chết tăng; thẻ tháng còn ≤ 24 giờ và khi hết hẳn; license jxtdAuto còn ≤ 7 ngày.
+- Mỗi loại cảnh báo của một nhân vật gửi tối đa 1 lần / 30 phút. Hết lỗi thì gửi tin "🟢 … trở lại".
+- Không đọc được phần "THÔNG TIN NHIỆM VỤ": jxtdAuto vẽ thẳng lên tab và chỉ hiện nhân vật đang chọn.
+- Kiểm tra nhanh: nút **Đọc ngay** ở trang jxtdAuto, hoặc `python netwatchdog.py --jxtd` (ghi kết quả vào log).
 
 ## Cơ chế an toàn
 
@@ -65,7 +79,7 @@ Cần Python 3.10+ và `pip install -r requirements.txt`. Khi chạy từ mã ng
 
 - `pythonw app.py`: mở cửa sổ Cài đặt.
 - `python app.py --service --dry-run -v`: chạy theo dõi ở console, **chỉ ghi log** (không đổi mạng, không khởi động lại, không mở app).
-- `python netwatchdog.py --status`: in báo cáo tình trạng máy. `--test-telegram`: gửi tin thử.
+- `python netwatchdog.py --status`: in báo cáo tình trạng máy. `--test-telegram`: gửi tin thử. `--jxtd`: đọc jxtdAuto một lần.
 - Log: `logs\netwatchdog.log`. Trạng thái (hàng đợi tin, lịch sử reboot): `state.json`.
 - Test: `python -m unittest discover -s tests`.
 
@@ -89,6 +103,7 @@ Build trên máy: cài Inno Setup 6 (`choco install innosetup`) và `pip install
 |---|---|
 | `app.py` | Điểm vào của `NetWatchdog.exe`: mở Cài đặt, `--service` chạy nền, `--install-task` / `--uninstall-task` |
 | `netwatchdog.py` | Vòng lặp theo dõi, quy trình khôi phục, Telegram (gửi + hàng đợi + lệnh), báo cáo |
+| `jxtd.py` | Theo dõi nhân vật jxtdAuto: đọc bảng qua UI Automation, lịch sử CSV, cảnh báo |
 | `sysops.py` | Thao tác Windows: `netsh wlan`, `Disable/Enable-NetAdapter`, `shutdown`, mở ứng dụng, Scheduled Task |
 | `settings_gui.py` | Cửa sổ Cài đặt (Tkinter), ghi `config.json` |
 | `updater.py` | Kiểm tra bản mới trên GitHub Releases, tải và chạy bộ cài |

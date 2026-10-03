@@ -12,9 +12,10 @@ import time
 import tkinter as tk
 from tkinter import filedialog, font as tkfont, messagebox, ttk
 
+import jxtd
 import sysops
 import updater
-from netwatchdog import (CONFIG_PATH, FROZEN, INSTANCE_PORT, LOG_PATH, STATE_PATH, State, Telegram, check_online,
+from netwatchdog import (CONFIG_PATH, FROZEN, INSTANCE_PORT, JX_HISTORY_DIR, LOG_PATH, STATE_PATH, State, Telegram, check_online,
                          fmt_duration, load_config, machine_name, public_ip, save_json, status_report)
 from version import __version__
 
@@ -36,7 +37,7 @@ DARK = {
 }
 
 ICONS = {"home": "", "send": "", "wifi": "", "adapter": "",
-         "restart": "", "check": "", "refresh": "", "folder": ""}
+         "restart": "", "check": "", "refresh": "", "game": "", "folder": ""}
 
 
 def windows_dark():
@@ -370,6 +371,7 @@ class SettingsApp(tk.Tk):
                 ("wifi", "wifi", "Wi-Fi dự phòng", self.page_wifi),
                 ("adapters", "adapter", "Card mạng", self.page_adapters),
                 ("reboot", "restart", "Khởi động lại & Ứng dụng", self.page_reboot),
+                ("jxtd", "game", "jxtdAuto", self.page_jxtd),
                 ("check", "check", "Kiểm tra mạng", self.page_check)):
             page = builder()
             page.grid(row=0, column=0, sticky="nsew")
@@ -768,6 +770,84 @@ class SettingsApp(tk.Tk):
                     r.get("retry_cooldown_min", 10), "phút")
         return p
 
+    def page_jxtd(self):
+        c = self.c
+        p = Page(self.pages_box, self, "jxtdAuto",
+                 "Theo dõi nhân vật trong jxtdAuto, báo cáo và cảnh báo qua Telegram.")
+        J = self.cfg["jxtd"]
+        card = Card(p.body, self, "Theo dõi",
+                    "Chỉ ĐỌC bảng nhân vật trong cửa sổ jxtdAuto qua lớp trợ năng của Windows: "
+                    "không bấm, không gõ, không đọc bộ nhớ của jxtdAuto hay game.")
+        card.pack(fill="x")
+        self.toggle(card, "Bật theo dõi jxtdAuto", "Đọc bảng nhân vật mỗi phút và lưu lịch sử CSV theo ngày.",
+                    "jx_on", J.get("enabled"))
+        self.number(card, "Báo cáo định kỳ", "Gửi bảng nhân vật theo chu kỳ. 0 = tắt.", "jx_report",
+                    J.get("report_min", 60), "phút")
+        self.number(card, "Giãn cách cảnh báo", "Mỗi loại cảnh báo của một nhân vật gửi tối đa 1 lần trong khoảng này.",
+                    "jx_cooldown", J.get("cooldown_min", 30), "phút")
+
+        self.gap(p.body)
+        card = Card(p.body, self, "Cảnh báo ngay khi",
+                    "Luôn báo khi jxtdAuto bị tắt / không thấy cửa sổ. Hết lỗi sẽ có tin “🟢 trở lại”.")
+        card.pack(fill="x")
+        self.toggle(card, "Nhân vật biến khỏi danh sách", None, "jx_missing", J.get("char_missing", True))
+        self.toggle(card, "Nhân vật bị bỏ tick", None, "jx_untick", J.get("unticked", True))
+        self.toggle(card, "Thu nhập chuyển sang âm", None, "jx_neg", J.get("negative_income", True))
+        self.toggle(card, "Tác vụ thay đổi", "Gồm cả lúc đứng im; tin kèm đầy đủ thông tin nhân vật.", "jx_task",
+                    J.get("task_change", True))
+        self.toggle(card, "Nhân vật chết", "Số sau dấu “/” ở cột Phù/chết tăng.", "jx_death", J.get("death", True))
+        self.toggle(card, "Thẻ tháng sắp hết / đã hết", None, "jx_card", J.get("month_card", True))
+        self.number(card, "Ngưỡng thẻ tháng", "Báo “sắp hết” khi số giờ còn lại ≤ ngưỡng này.", "jx_card_h",
+                    J.get("month_card_warn_hours", 24), "giờ")
+        self.number(card, "Ngưỡng license jxtdAuto", "Theo số ngày “Còn lại” trên tiêu đề cửa sổ.", "jx_lic",
+                    J.get("license_warn_days", 7), "ngày")
+
+        self.gap(p.body)
+        card = Card(p.body, self, "Đọc thử", f"Lịch sử lưu tại {JX_HISTORY_DIR}")
+        card.pack(fill="x")
+        box = tk.Frame(card, bg=c["surface"], highlightthickness=1, highlightbackground=c["border"])
+        box.pack(fill="x", padx=20, pady=(6, 0))
+        cols = (("name", "NHÂN VẬT", 125), ("task", "TÁC VỤ", 140), ("exp", "EXP/GIỜ", 65),
+                ("income", "THU NHẬP", 85), ("money", "NGÂN LƯỢNG", 85), ("level", "CẤP/EXP", 95),
+                ("deaths", "PHÙ/CHẾT", 60), ("card", "THẺ THÁNG", 90))
+        self.jx_tree = ttk.Treeview(box, columns=[k for k, _, _ in cols], show="headings", height=5)
+        for k, title, w in cols:
+            self.jx_tree.heading(k, text=title, anchor="w")
+            self.jx_tree.column(k, width=self.S(w), stretch=k == "task")
+        self.jx_tree.pack(fill="x")
+        tb = tk.Frame(card, bg=c["surface"])
+        tb.pack(fill="x", padx=20, pady=14)
+        self.jx_btn = ttk.Button(tb, text="Đọc ngay", style="Accent.TButton", command=self.jx_read)
+        self.jx_btn.pack(side="left")
+        self.jx_info = tk.Label(tb, text="", font=self.f_small, bg=c["surface"], fg=c["muted"])
+        self.jx_info.pack(side="left", padx=12)
+        return p
+
+    def jx_read(self):
+        self.jx_btn.state(["disabled"])
+        self.jx_info.config(text="Đang đọc…")
+        J = load_config(CONFIG_PATH)["jxtd"]
+
+        def work():
+            jxtd.com_init()
+            snap = jxtd.read(J)
+            self.after(0, lambda: self._jx_fill(snap))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _jx_fill(self, snap):
+        self.jx_btn.state(["!disabled"])
+        self.jx_tree.delete(*self.jx_tree.get_children())
+        if not snap.found:
+            self.jx_info.config(text="Không thấy cửa sổ jxtdAuto" + (f" ({snap.error})" if snap.error else ""),
+                                fg=self.c["danger"])
+            return
+        for r in snap.rows:
+            self.jx_tree.insert("", tk.END, values=(("✓ " if r.checked else "✗ ") + r.name, r.task, r.exp,
+                                                    r.income, r.money, r.level, r.deaths, r.card))
+        lic = f" · license còn {snap.license_days} ngày" if snap.license_days is not None else ""
+        self.jx_info.config(text=f"{len(snap.rows)} nhân vật lúc {time.strftime('%H:%M:%S')}{lic}",
+                            fg=self.c["muted"])
+
     # ------------------------------------------------ tổng quan
     def _paint_hero(self, online):
         c = self.c
@@ -1115,6 +1195,18 @@ class SettingsApp(tk.Tk):
             max_reboots_per_day=self._int("max_reboots", 3),
             min_uptime_before_reboot_min=self._int("min_uptime", 15))
         c["launch_apps"] = self.launch_mode.get()
+        c["jxtd"].update(
+            enabled=self.vars["jx_on"].get(),
+            report_min=self._int("jx_report", 60),
+            cooldown_min=max(1, self._int("jx_cooldown", 30)),
+            char_missing=self.vars["jx_missing"].get(),
+            unticked=self.vars["jx_untick"].get(),
+            negative_income=self.vars["jx_neg"].get(),
+            task_change=self.vars["jx_task"].get(),
+            death=self.vars["jx_death"].get(),
+            month_card=self.vars["jx_card"].get(),
+            month_card_warn_hours=self._int("jx_card_h", 24),
+            license_warn_days=self._int("jx_lic", 7))
         old = {a.get("path"): a for a in c.get("apps") or []}
         c["apps"] = []
         for iid in self.apps_tree.get_children():

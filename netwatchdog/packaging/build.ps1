@@ -18,6 +18,7 @@ try {
 
     python -m PyInstaller --noconfirm --clean --windowed --uac-admin --name NetWatchdog `
         --icon "$pack\netwatchdog.ico" --add-data "$pack\netwatchdog.ico;packaging" `
+        --collect-submodules comtypes --exclude-module comtypes.test `
         --distpath "$root\build\dist" --workpath "$root\build\work" --specpath "$root\build" "$root\app.py"
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller loi' }
 

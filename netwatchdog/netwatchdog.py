@@ -28,6 +28,7 @@ import urllib.request
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
+import jxtd
 import sysops
 from version import __version__
 
@@ -51,6 +52,7 @@ BASE_DIR = _data_dir()
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 STATE_PATH = os.path.join(BASE_DIR, "state.json")
 LOG_PATH = os.path.join(BASE_DIR, "logs", "netwatchdog.log")
+JX_HISTORY_DIR = os.path.join(BASE_DIR, "jxtd_history")
 INSTANCE_PORT = 47831  # khóa chạy 1 tiến trình duy nhất
 
 log = logging.getLogger("netwatchdog")
@@ -80,6 +82,7 @@ DEFAULT_CONFIG = {
     "apps": [],                      # [{"path": "...", "args": "", "workdir": "", "skip_if_running": true}]
     "launch_apps": "after_reboot",   # "after_reboot" | "every_start" | "never"
     "report": {"heartbeat_min": 360, "public_ip": True},
+    "jxtd": jxtd.DEFAULT_CONFIG,     # theo dõi nhân vật jxtdAuto (xem jxtd.py)
 }
 
 
@@ -291,6 +294,9 @@ def status_report(cfg, state, online=None, detail=""):
     lines.append(f"🔁 Reboot do mất mạng (24h): {n_reboot}")
     if state.get("last_outage"):
         lines.append(f"📉 Lần mất mạng gần nhất: {state.get('last_outage')}")
+    jx = (state.get("jxtd") or {}).get("summary")
+    if cfg["jxtd"].get("enabled") and jx:
+        lines.append(f"🎮 jxtdAuto: {jx}")
     return "\n".join(lines)
 
 
@@ -308,6 +314,7 @@ class Watchdog:
         self.last_fix = ""
         self.last_heartbeat = time.time()
         self.recovering = threading.Lock()
+        self.jx = None
 
     @property
     def cfg(self):
@@ -363,6 +370,7 @@ class Watchdog:
         self.on_start()
         if self.cfg["telegram"].get("commands", True):
             threading.Thread(target=self.command_loop, daemon=True, name="tg-commands").start()
+        threading.Thread(target=self.jxtd_loop, daemon=True, name="jxtd").start()
         fails = 0
         while not self.stop_event.is_set():
             cfg = self.cfg
@@ -408,6 +416,29 @@ class Watchdog:
             if ok or time.time() >= deadline or self.stop_event.is_set():
                 return ok
             self.sleep(min(3, max(0.1, deadline - time.time())))
+
+    # ------------------------------------------------ jxtdAuto
+    def jxtd_loop(self):
+        """Đọc bảng nhân vật jxtdAuto theo chu kỳ khi được bật trong Cài đặt (bật/tắt không cần khởi động lại)."""
+        com_ready = False
+        while not self.stop_event.is_set():
+            cfg = self.cfg
+            if not cfg["jxtd"].get("enabled"):
+                self.jx = None
+                self.sleep(10)
+                continue
+            if not com_ready:
+                jxtd.com_init()
+                com_ready = True
+            if self.jx is None:
+                self.jx = jxtd.JxMonitor(lambda: self.cfg, self.state, self.tg.send, JX_HISTORY_DIR)
+                log.info("Bắt đầu theo dõi jxtdAuto")
+            t0 = time.time()
+            try:
+                self.jx.tick()
+            except Exception:  # noqa: BLE001
+                log.exception("Lỗi khi theo dõi jxtdAuto")
+            self.sleep(max(5, cfg["jxtd"].get("poll_sec", 60) - (time.time() - t0)))
 
     # ------------------------------------------------ Khôi phục
     def recover(self):
@@ -494,6 +525,7 @@ class Watchdog:
             "/fix — chạy quy trình khôi phục mạng ngay\n"
             "/reboot yes — khởi động lại máy\n"
             "/cancel — hủy lệnh khởi động lại đang chờ\n"
+            "/jx — tình hình nhân vật jxtdAuto\n"
             "/help — trợ giúp")
 
     def command_loop(self):
@@ -531,6 +563,10 @@ class Watchdog:
         arg = parts[1].lower() if len(parts) > 1 else ""
         if cmd in ("/status", "/start"):
             return status_report(self.cfg, self.state)
+        if cmd == "/jx":
+            if not self.cfg["jxtd"].get("enabled"):
+                return "Chưa bật theo dõi jxtdAuto (Cài đặt → jxtdAuto)."
+            return self.jx.report_text() if self.jx else "🎮 Đang khởi động theo dõi jxtdAuto, chờ chút."
         if cmd == "/apps":
             return self.launch_apps() or "Chưa chọn ứng dụng nào."
         if cmd == "/fix":
@@ -584,6 +620,7 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true", help="chỉ ghi log, không đổi mạng/khởi động lại/mở app")
     ap.add_argument("--status", action="store_true", help="in báo cáo tình trạng rồi thoát")
     ap.add_argument("--test-telegram", action="store_true", help="gửi tin thử lên Telegram rồi thoát")
+    ap.add_argument("--jxtd", action="store_true", help="đọc bảng nhân vật jxtdAuto một lần (ghi vào log) rồi thoát")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
 
@@ -592,6 +629,11 @@ def main(argv=None):
     wd = Watchdog(a.config)
     if a.status:
         print(status_report(wd.cfg, wd.state))
+        return 0
+    if a.jxtd:
+        jxtd.com_init()
+        snap = jxtd.read(wd.cfg["jxtd"])
+        log.info("jxtdAuto:\n%s%s", jxtd.build_report(wd.cfg, snap), f"\nLỗi: {snap.error}" if snap.error else "")
         return 0
     if a.test_telegram:
         wd.tg.send_now("✅ NetWatchdog kết nối Telegram thành công!\n\n" + status_report(wd.cfg, wd.state))

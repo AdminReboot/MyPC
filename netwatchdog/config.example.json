@@ -6,7 +6,11 @@
     "commands": true
   },
   "check": {
-    "targets": ["1.1.1.1:53", "8.8.8.8:53", "208.67.222.222:443"],
+    "targets": [
+      "1.1.1.1:53",
+      "8.8.8.8:53",
+      "208.67.222.222:443"
+    ],
     "http_url": "http://www.msftconnecttest.com/connecttest.txt",
     "interval_sec": 30,
     "fail_threshold": 3,
@@ -29,5 +33,29 @@
   "report": {
     "heartbeat_min": 360,
     "public_ip": true
+  },
+  "jxtd": {
+    "enabled": false,
+    "window_title_prefix": "jxtdAuto",
+    "window_class": "jxtdAutoWnd",
+    "process_name": "jxtdAuto.exe",
+    "poll_sec": 60,
+    "report_min": 60,
+    "report_on_start": true,
+    "history_keep_days": 90,
+    "cooldown_min": 30,
+    "startup_grace_min": 5,
+    "missing_confirm_reads": 2,
+    "remind_window_missing": true,
+    "char_missing": true,
+    "unticked": true,
+    "negative_income": true,
+    "task_change": true,
+    "death": true,
+    "month_card": true,
+    "month_card_warn_hours": 24,
+    "license_warn_days": 7,
+    "license_cooldown_hours": 24,
+    "forget_missing_char_hours": 12
   }
 }
