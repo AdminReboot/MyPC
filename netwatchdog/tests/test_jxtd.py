@@ -135,6 +135,14 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual(self.tick(), [])              # trong thời gian chờ
         self.assertIn("Đứng im → Về thành", self.tick(30)[0])
 
+    def test_task_progress_counter_is_not_a_change(self):
+        self.reader.rows[0] = row("[0]A", task="NV Mặc Thạch (55 / 100)")
+        self.tick()
+        self.reader.rows[0] = row("[0]A", task="NV Mặc Thạch (56 / 100)")
+        self.assertEqual(self.tick(40), [])
+        self.reader.rows[0] = row("[0]A", task="Luyện công")
+        self.assertIn("NV Mặc Thạch (55 / 100) → Luyện công", self.tick()[0])
+
     def test_death_increase(self):
         self.tick()
         self.reader.rows[0] = row("[0]A", deaths="4 / 0")   # chỉ số phù tăng: không báo
@@ -175,6 +183,81 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual(self.tick(30), [])
         self.assertIn("🎮 jxtdAuto", self.tick(31)[0])
         self.assertIn("[0]A", self.mon.report_text())
+
+
+class CommandTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = nw.deep_merge(nw.DEFAULT_CONFIG, {"jxtd": {"enabled": True, "report_on_start": False,
+                                                              "report_min": 0, "startup_grace_min": 0}})
+        self.reader = FakeReader()
+        self.reader.rows = [row("[0]BuffThoai"), row("[1]VụtĐêEm", task="Đứng im", income="-380 lượng")]
+        self.state = nw.State(os.path.join(self.tmp, "s.json"))
+        self.hist = os.path.join(self.tmp, "h")
+        self.mon = jxtd.JxMonitor(lambda: self.cfg, self.state, lambda m: None, self.hist, reader=self.reader)
+        self.mon.started = 0
+
+    def test_filter_without_diacritics(self):
+        self.mon.tick()
+        self.assertEqual([r.name for r in jxtd.filter_rows(self.reader.rows, "vut dem")], [])
+        self.assertEqual([r.name for r in jxtd.filter_rows(self.reader.rows, "vutdê")], ["[1]VụtĐêEm"])
+        t = self.mon.report_text("VUT")
+        self.assertIn("[1]VụtĐêEm", t)
+        self.assertNotIn("BuffThoai", t)
+        self.assertIn("Không thấy nhân vật", self.mon.report_text("abc"))
+        self.assertIn("BuffThoai", self.mon.report_text(""))
+
+    def test_short(self):
+        self.mon.tick()
+        lines = self.mon.short_text().splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(lines[2], "✅ [1]VụtĐêEm · Đứng im · 1.8m/h · -380 lượng")
+
+    def test_day_summary(self):
+        from datetime import datetime
+        day = datetime(2026, 10, 3, 8, 0)
+        def r(task, deaths, level):
+            x = row("[0]BuffThoai", task=task, deaths=deaths)
+            x.level = level
+            return [x]
+        snaps = [r("Luyện công", "3 / 0", "Lv109 (39.7%)"),
+                 None,  # một lần không thấy jxtdAuto
+                 r("Về thành", "4 / 1", "Lv109 (45.2%)"),
+                 r("Luyện công", "5 / 2", "Lv110 (1.5%)")]
+        for i, rows in enumerate(snaps):
+            s = jxtd.Snapshot(ts=day.timestamp() + i * 60, found=rows is not None, rows=rows or [])
+            jxtd.write_history(s, self.hist, 90)
+        t = jxtd.day_summary(self.cfg, self.hist, day)
+        self.assertIn("ngày 03/10 (08:00 → 08:03)", t)
+        self.assertIn("Không thấy jxtdAuto ≈ 1 phút", t)
+        self.assertIn("Lv109 39.7% → Lv110 1.5% (+1 cấp)", t)
+        self.assertIn("chết 2 · 🔄 đổi tác vụ 2", t)
+        self.assertIn("Chưa có dữ liệu", jxtd.day_summary(self.cfg, self.hist, datetime(2026, 1, 1)))
+
+    def test_encode_png(self):
+        png = jxtd.encode_png(2, 1, bytes([0, 0, 255, 0, 255, 0, 0, 0]))  # đỏ, xanh dương (BGRX)
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+        import struct
+        import zlib
+        self.assertEqual(struct.unpack(">II", png[16:24]), (2, 1))
+        idat = png.index(b"IDAT")
+        n = struct.unpack(">I", png[idat - 4:idat])[0]
+        self.assertEqual(zlib.decompress(png[idat + 4:idat + 4 + n]), b"\x00\xff\x00\x00\x00\x00\xff")
+
+    def test_watchdog_routes_commands(self):
+        cfg_path = os.path.join(self.tmp, "cfg.json")
+        nw.save_json(cfg_path, self.cfg)
+        wd = nw.Watchdog(cfg_path, os.path.join(self.tmp, "s2.json"))
+        self.assertIn("Đang khởi động", wd.handle_command("/jx_gon"))
+        wd.jx = self.mon
+        self.mon.tick()
+        self.assertIn("·", wd.handle_command("/jx_gon"))
+        self.assertIn("[1]VụtĐêEm", wd.handle_command("/jx vut"))
+        self.assertIn("/jx_anh", wd.handle_command("/help"))
+        self.cfg["jxtd"]["enabled"] = False
+        nw.save_json(cfg_path, self.cfg)
+        wd._cfg = None  # buộc nạp lại (mtime có thể trùng trong cùng giây)
+        self.assertIn("Chưa bật", wd.handle_command("/jx_homnay"))
 
 
 if __name__ == "__main__":

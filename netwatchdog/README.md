@@ -52,15 +52,18 @@ Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình:
 | `/fix` | Chạy quy trình khôi phục mạng ngay |
 | `/reboot yes` | Khởi động lại máy sau 30 giây |
 | `/cancel` | Hủy lệnh khởi động lại đang chờ |
-| `/jx` | Bảng nhân vật jxtdAuto lúc này (khi đã bật theo dõi) |
+| `/jx` | Bảng nhân vật jxtdAuto lúc này (khi đã bật theo dõi). `/jx vut`: chỉ nhân vật có tên chứa "vut", không cần gõ dấu |
+| `/jx_gon` | jxtdAuto rút gọn, mỗi nhân vật một dòng: tick · tác vụ · EXP/giờ · thu nhập |
+| `/jx_homnay` | Tổng kết jxtdAuto trong ngày: EXP/cấp tăng, thu nhập và ngân lượng đầu ngày → hiện tại, số lần chết, số lần đổi tác vụ, thời gian không thấy jxtdAuto |
+| `/jx_anh` | Ảnh chụp cửa sổ jxtdAuto (chụp thụ động, cửa sổ bị che vẫn chụp được, chỉ không chụp được khi đang thu nhỏ). Xem được cả phần "THÔNG TIN NHIỆM VỤ" của nhân vật đang chọn |
 
 ## Theo dõi jxtdAuto
 
 Bật ở trang **jxtdAuto** trong cửa sổ Cài đặt (mặc định tắt). NetWatchdog **chỉ đọc** bảng nhân vật trong cửa sổ jxtdAuto qua lớp trợ năng của Windows (UI Automation): không bấm, không gõ, không đổi cài đặt, không đọc/ghi bộ nhớ của jxtdAuto hay game.
 
 - Mỗi 60 giây đọc đủ các cột: tác vụ, EXP/giờ, thu nhập, ngân lượng, cấp/EXP, phù/chết, thẻ tháng, ô tick. Lịch sử lưu ở `jxtd_history\YYYY-MM-DD.csv` trong thư mục dữ liệu (giữ 90 ngày, mở được bằng Excel).
-- Báo cáo định kỳ (mặc định 60 phút), một lần khi khởi động, và khi gửi `/jx`.
-- Cảnh báo ngay khi: jxtdAuto bị tắt / không thấy cửa sổ (nhắc lại mỗi 30 phút); nhân vật biến khỏi danh sách hoặc bị bỏ tick; thu nhập chuyển sang âm; tác vụ thay đổi (kể cả đứng im, tin kèm đầy đủ thông tin nhân vật); số lần chết tăng; thẻ tháng còn ≤ 24 giờ và khi hết hẳn; license jxtdAuto còn ≤ 7 ngày.
+- Báo cáo định kỳ (mặc định 60 phút), một lần khi khởi động, và theo lệnh `/jx`, `/jx_gon`, `/jx_homnay`, `/jx_anh` (xem [Lệnh Telegram](#lệnh-telegram)).
+- Cảnh báo ngay khi: jxtdAuto bị tắt / không thấy cửa sổ (nhắc lại mỗi 30 phút); nhân vật biến khỏi danh sách hoặc bị bỏ tick; thu nhập chuyển sang âm; tác vụ thay đổi (kể cả đứng im, tin kèm đầy đủ thông tin nhân vật; bộ đếm tiến độ như "(55 / 100)" tăng thì không tính là đổi); số lần chết tăng; thẻ tháng còn ≤ 24 giờ và khi hết hẳn; license jxtdAuto còn ≤ 7 ngày.
 - Mỗi loại cảnh báo của một nhân vật gửi tối đa 1 lần / 30 phút. Hết lỗi thì gửi tin "🟢 … trở lại".
 - Không đọc được phần "THÔNG TIN NHIỆM VỤ": jxtdAuto vẽ thẳng lên tab và chỉ hiện nhân vật đang chọn.
 - Kiểm tra nhanh: nút **Đọc ngay** ở trang jxtdAuto, hoặc `python netwatchdog.py --jxtd` (ghi kết quả vào log).
