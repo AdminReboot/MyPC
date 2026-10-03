@@ -25,6 +25,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
@@ -221,6 +222,22 @@ class Telegram:
     def send_now(self, text, chat_id=None):
         self.call("sendMessage", {"chat_id": chat_id or self.chat_id, "text": text[:4000],
                                   "disable_web_page_preview": "true"})
+
+    def send_photo(self, png, caption="", timeout=60):
+        """Gửi ảnh PNG ngay (không xếp hàng đợi — ảnh chỉ có ý nghĩa lúc vừa chụp)."""
+        boundary = uuid.uuid4().hex
+        parts = []
+        for name, value in (("chat_id", self.chat_id), ("caption", caption[:1000])):
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="jxtdauto.png"\r\n'
+                     f"Content-Type: image/png\r\n\r\n".encode() + png + b"\r\n")
+        parts.append(f"--{boundary}--\r\n".encode())
+        req = urllib.request.Request(f"https://api.telegram.org/bot{self.token}/sendPhoto", data=b"".join(parts),
+                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            res = json.loads(r.read().decode("utf-8"))
+        if not res.get("ok"):
+            raise RuntimeError(res.get("description", "Telegram lỗi"))
 
     def send(self, text):
         """Xếp tin vào hàng đợi (lưu đĩa) rồi thử gửi ngay."""
@@ -525,7 +542,10 @@ class Watchdog:
             "/fix — chạy quy trình khôi phục mạng ngay\n"
             "/reboot yes — khởi động lại máy\n"
             "/cancel — hủy lệnh khởi động lại đang chờ\n"
-            "/jx — tình hình nhân vật jxtdAuto\n"
+            "/jx — bảng nhân vật jxtdAuto (/jx <tên> — một nhân vật, không cần dấu)\n"
+            "/jx_gon — jxtdAuto rút gọn, mỗi nhân vật một dòng\n"
+            "/jx_homnay — tổng kết jxtdAuto trong ngày\n"
+            "/jx_anh — ảnh chụp cửa sổ jxtdAuto\n"
             "/help — trợ giúp")
 
     def command_loop(self):
@@ -563,10 +583,8 @@ class Watchdog:
         arg = parts[1].lower() if len(parts) > 1 else ""
         if cmd in ("/status", "/start"):
             return status_report(self.cfg, self.state)
-        if cmd == "/jx":
-            if not self.cfg["jxtd"].get("enabled"):
-                return "Chưa bật theo dõi jxtdAuto (Cài đặt → jxtdAuto)."
-            return self.jx.report_text() if self.jx else "🎮 Đang khởi động theo dõi jxtdAuto, chờ chút."
+        if cmd.startswith("/jx"):
+            return self.jx_command(cmd, " ".join(parts[1:]))
         if cmd == "/apps":
             return self.launch_apps() or "Chưa chọn ứng dụng nào."
         if cmd == "/fix":
@@ -587,6 +605,29 @@ class Watchdog:
             if ok:
                 self.state.set(pending_launch=False)
             return "✅ Đã hủy khởi động lại." if ok else f"Không có lệnh nào để hủy ({out[:200]})"
+        return self.HELP
+
+    def jx_command(self, cmd, arg):
+        cfg = self.cfg
+        if cmd == "/jx_anh":  # chụp được kể cả khi chưa bật theo dõi
+            png, err = jxtd.capture_png(cfg["jxtd"])
+            if not png:
+                return f"📸 {err}"
+            try:
+                self.tg.send_photo(png, jxtd.header_line(cfg, "📸", f"jxtdAuto · {jxtd.hm()}"))
+            except Exception as e:  # noqa: BLE001
+                return f"❌ Gửi ảnh lỗi: {e}"
+            return ""
+        if not cfg["jxtd"].get("enabled"):
+            return "Chưa bật theo dõi jxtdAuto (Cài đặt → jxtdAuto)."
+        if cmd == "/jx_homnay":
+            return jxtd.day_summary(cfg, JX_HISTORY_DIR)
+        if not self.jx or not self.jx.last_snap:
+            return "🎮 Đang khởi động theo dõi jxtdAuto, chờ chút."
+        if cmd == "/jx_gon":
+            return self.jx.short_text()
+        if cmd == "/jx":
+            return self.jx.report_text(arg)
         return self.HELP
 
 
@@ -634,6 +675,8 @@ def main(argv=None):
         jxtd.com_init()
         snap = jxtd.read(wd.cfg["jxtd"])
         log.info("jxtdAuto:\n%s%s", jxtd.build_report(wd.cfg, snap), f"\nLỗi: {snap.error}" if snap.error else "")
+        png, err = jxtd.capture_png(wd.cfg["jxtd"])
+        log.info("Chụp cửa sổ: %s", f"{len(png)} byte" if png else err)
         return 0
     if a.test_telegram:
         wd.tg.send_now("✅ NetWatchdog kết nối Telegram thành công!\n\n" + status_report(wd.cfg, wd.state))

@@ -14,9 +14,12 @@ import ctypes.wintypes as wt
 import logging
 import os
 import re
+import struct
 import sys
 import time
+import unicodedata
 import warnings
+import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -137,6 +140,15 @@ def parse_description(desc, headers):
     return out
 
 
+TASK_PROGRESS_RE = re.compile(r"\s*\(\s*\d+\s*/\s*\d+\s*\)\s*$")
+
+
+def task_key(task):
+    """Tên tác vụ bỏ bộ đếm tiến độ ở cuối: "NV Mặc Thạch (55 / 100)" -> "NV Mặc Thạch".
+    Bộ đếm tăng liên tục khi làm nhiệm vụ, không coi là đổi tác vụ."""
+    return TASK_PROGRESS_RE.sub("", task or "")
+
+
 def make_row(name, desc, state, headers):
     r = Row(name=name.strip(), checked=bool(state & STATE_SYSTEM_CHECKED),
             selected=bool(state & STATE_SYSTEM_SELECTED))
@@ -186,26 +198,32 @@ def com_init():
         pass
 
 
+def find_window(J):
+    """HWND cửa sổ chính của jxtdAuto (theo đầu tiêu đề + tên lớp), hoặc None."""
+    import win32gui
+    prefix, cls = J["window_title_prefix"], J.get("window_class") or ""
+    hits = []
+
+    def cb(h, _):
+        try:
+            if win32gui.GetWindowText(h).startswith(prefix) and (not cls or win32gui.GetClassName(h) == cls):
+                hits.append(h)
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+    win32gui.EnumWindows(cb, None)
+    return hits[0] if hits else None
+
+
 def read(J):
     """Đọc cửa sổ jxtdAuto một lần -> Snapshot. J = cfg["jxtd"]."""
     import win32gui
     snap = Snapshot(ts=time.time(), found=False)
     try:
-        prefix, cls = J["window_title_prefix"], J.get("window_class") or ""
-        hits = []
-
-        def cb(h, _):
-            try:
-                if win32gui.GetWindowText(h).startswith(prefix) and (not cls or win32gui.GetClassName(h) == cls):
-                    hits.append(h)
-            except Exception:  # noqa: BLE001
-                pass
-            return True
-        win32gui.EnumWindows(cb, None)
-        if not hits:
+        hwnd = find_window(J)
+        if not hwnd:
             snap.process_running = process_running(J["process_name"])
             return snap
-        hwnd = hits[0]
         snap.process_running = True
         snap.title = win32gui.GetWindowText(hwnd)
         m = re.search(r"Còn lại\s*(\d+)", snap.title)
@@ -271,6 +289,162 @@ def summary(snap):
     neg = sum(r.income_negative for r in snap.rows)
     return (f"{len(snap.rows)} nhân vật, {sum(r.checked for r in snap.rows)} đang tick"
             + (f", {neg} thu nhập âm" if neg else ""))
+
+
+def norm(s):
+    """Bỏ dấu tiếng Việt + chữ thường, để tìm tên nhân vật không cần gõ dấu."""
+    s = unicodedata.normalize("NFD", s.replace("đ", "d").replace("Đ", "D"))
+    return "".join(ch for ch in s if unicodedata.category(ch) != "Mn").lower()
+
+
+def filter_rows(rows, query):
+    """Nhân vật có tên chứa `query` (không phân biệt dấu/hoa thường)."""
+    q = norm(query.strip())
+    return [r for r in rows if q in norm(r.name)]
+
+
+def build_short(cfg, snap, missing=()):
+    """Bản rút gọn: mỗi nhân vật một dòng."""
+    lines = [header_line(cfg, "🎮", f"jxtdAuto · {hm(snap.ts)}")]
+    if not snap.found:
+        return build_report(cfg, snap)
+    if snap.license_days is not None:
+        lines[0] += f" · license {snap.license_days} ngày"
+    for r in snap.rows:
+        lines.append(f"{'✅' if r.checked else '⬜'} {r.name} · {r.task or '?'} · {r.exp or '?'} · {r.income or '?'}")
+    if missing:
+        lines.append("❓ Mất khỏi danh sách: " + ", ".join(missing))
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- Tổng kết trong ngày (từ CSV)
+LEVEL_RE = re.compile(r"Lv\s*(\d+)\s*\(([\d.]+)%\)")
+
+
+def _level(text):
+    m = LEVEL_RE.search(text or "")
+    return (int(m.group(1)), float(m.group(2))) if m else None
+
+
+def _deaths(text):
+    return Row(name="", deaths=text or "").death_count
+
+
+def day_summary(cfg, folder, day=None):
+    """Tổng kết một ngày cho từng nhân vật: EXP/cấp, thu nhập, ngân lượng, số lần chết, đổi tác vụ, gián đoạn."""
+    day = day or datetime.now()
+    path = os.path.join(folder, day.strftime("%Y-%m-%d") + ".csv")
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            data = list(csv.DictReader(f))
+    except FileNotFoundError:
+        return f"📅 Chưa có dữ liệu jxtdAuto ngày {day:%d/%m} (đã bật theo dõi trong Cài đặt chưa?)."
+    if not data:
+        return f"📅 Chưa có dữ liệu jxtdAuto ngày {day:%d/%m}."
+    chars, gaps = {}, 0
+    for d in data:
+        name = d.get("nhan_vat") or ""
+        if not name:
+            gaps += "không thấy" in (d.get("ghi_chu") or "")
+            continue
+        c = chars.get(name)
+        if c is None:
+            chars[name] = c = {"first": d, "tasks": 0, "deaths": 0}
+        else:
+            if task_key(d.get("tac_vu")) != task_key(c["last"].get("tac_vu")):
+                c["tasks"] += 1
+            d0, d1 = _deaths(c["last"].get("phu_chet")), _deaths(d.get("phu_chet"))
+            if d0 is not None and d1 is not None and d1 > d0:
+                c["deaths"] += d1 - d0
+        c["last"] = d
+
+    t0, t1 = data[0]["thoi_gian"][11:16], data[-1]["thoi_gian"][11:16]
+    head = f"📅 jxtdAuto ngày {day:%d/%m} ({t0} → {t1})"
+    name = (cfg.get("machine_name") or "").strip()
+    lines = [head + (f" [{name}]" if name else "")]
+    if gaps:
+        poll = cfg.get("jxtd", {}).get("poll_sec", 60)
+        lines.append(f"🔴 Không thấy jxtdAuto ≈ {fmt_duration(gaps * poll)}")
+    for n, c in chars.items():
+        a, b = c["first"], c["last"]
+        la, lb = _level(a.get("cap_exp")), _level(b.get("cap_exp"))
+        if la and lb:
+            if lb[0] == la[0]:
+                exp = f"Lv{lb[0]}: {la[1]:g}% → {lb[1]:g}% ({lb[1] - la[1]:+.1f}%)"
+            else:
+                exp = f"Lv{la[0]} {la[1]:g}% → Lv{lb[0]} {lb[1]:g}% ({lb[0] - la[0]:+d} cấp)"
+        else:
+            exp = f"{a.get('cap_exp') or '?'} → {b.get('cap_exp') or '?'}"
+        mark = "✅" if b.get("tick") == "1" else "⬜"
+        lines += ["", f"{mark} {n}",
+                  f"   📈 {exp}",
+                  f"   💰 {a.get('thu_nhap') or '?'} → {b.get('thu_nhap') or '?'}",
+                  f"   🏦 NL {a.get('ngan_luong') or '?'} → {b.get('ngan_luong') or '?'}",
+                  f"   💀 chết {c['deaths']} · 🔄 đổi tác vụ {c['tasks']} · đang: {b.get('tac_vu') or '?'}"]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- Chụp cửa sổ
+def encode_png(width, height, bgrx):
+    """Ảnh 32 bit BGRX (hàng từ trên xuống) -> PNG RGB, chỉ dùng zlib."""
+    stride, raw = width * 4, bytearray()
+    for y in range(height):
+        row = bgrx[y * stride:(y + 1) * stride]
+        rgb = bytearray(width * 3)
+        rgb[0::3], rgb[1::3], rgb[2::3] = row[2::4], row[1::4], row[0::4]
+        raw += b"\x00" + rgb
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b""))
+
+
+def capture_png(J):
+    """Chụp cửa sổ jxtdAuto bằng PrintWindow (chụp thụ động, chụp được cả khi bị che).
+    Trả về (png_bytes, "") hoặc (None, lý do)."""
+    import win32gui
+    import win32ui
+    hwnd = find_window(J)
+    if not hwnd:
+        return None, "Không thấy cửa sổ jxtdAuto."
+    if win32gui.IsIconic(hwnd):
+        return None, "Cửa sổ jxtdAuto đang thu nhỏ (minimize) nên không chụp được. Mở lại cửa sổ là được (bị cửa sổ khác che cũng không sao)."
+    user32 = ctypes.WinDLL("user32")
+    set_ctx = getattr(user32, "SetThreadDpiAwarenessContext", None)
+    old = None
+    if set_ctx:  # chụp đúng kích thước thật trên màn hình có scale (Windows 10 1607+)
+        set_ctx.restype, set_ctx.argtypes = ctypes.c_void_p, [ctypes.c_void_p]
+        old = set_ctx(ctypes.c_void_p(-4))  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+    hdc = src = mem = bmp = None
+    try:
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        w, h = right - left, bottom - top
+        hdc = win32gui.GetWindowDC(hwnd)
+        src = win32ui.CreateDCFromHandle(hdc)
+        mem = src.CreateCompatibleDC()
+        bmp = win32ui.CreateBitmap()
+        bmp.CreateCompatibleBitmap(src, w, h)
+        mem.SelectObject(bmp)
+        if not user32.PrintWindow(hwnd, mem.GetSafeHdc(), 2):  # PW_RENDERFULLCONTENT
+            return None, "PrintWindow thất bại."
+        bits = bmp.GetBitmapBits(True)
+        if len(bits) != w * h * 4:
+            return None, f"Màn hình không ở chế độ màu 32 bit ({len(bits)} byte cho {w}x{h})."
+        return encode_png(w, h, bits), ""
+    except Exception as e:  # noqa: BLE001
+        return None, f"Lỗi chụp cửa sổ: {type(e).__name__}: {e}"
+    finally:
+        if mem:
+            mem.DeleteDC()
+        if src:
+            src.DeleteDC()
+        if hdc:
+            win32gui.ReleaseDC(hwnd, hdc)
+        if bmp:
+            win32gui.DeleteObject(bmp.GetHandle())
+        if old:
+            set_ctx(old)
 
 
 # ---------------------------------------------------------------- Lịch sử CSV
@@ -363,10 +537,23 @@ class JxMonitor:
         self.last_snap = None
         self.last_missing = []
 
-    def report_text(self):
+    def report_text(self, query=""):
+        """Bảng đầy đủ (lệnh /jx); có `query` thì chỉ các nhân vật khớp tên."""
         if not self.last_snap:
             return "🎮 Chưa đọc được jxtdAuto lần nào, chờ chút."
-        return build_report(self.get_cfg(), self.last_snap, self.last_missing)
+        snap, cfg = self.last_snap, self.get_cfg()
+        if not query.strip() or not snap.found:
+            return build_report(cfg, snap, self.last_missing)
+        rows = filter_rows(snap.rows, query)
+        if not rows:
+            return f"Không thấy nhân vật “{query.strip()}”. Đang có: " + ", ".join(r.name for r in snap.rows)
+        return "\n\n".join([header_line(cfg, "🎮", f"jxtdAuto · {hm(snap.ts)}")] + [fmt_row(r) for r in rows])
+
+    def short_text(self):
+        """Bản rút gọn (lệnh /jx_gon)."""
+        if not self.last_snap:
+            return "🎮 Chưa đọc được jxtdAuto lần nào, chờ chút."
+        return build_short(self.get_cfg(), self.last_snap, self.last_missing)
 
     def tick(self, now=None):
         now = now or time.time()
@@ -443,7 +630,8 @@ class JxMonitor:
                     lambda r=r: header_line(cfg, "📉", f"{r.name} thu nhập âm: {r.income}") + "\n\n" + fmt_row(r),
                     lambda d, r=r: header_line(cfg, "🟢", f"{r.name} thu nhập hết âm: {r.income}"),
                     cd, now=now)
-            if J["task_change"] and r.task != c.get("task") and alerts.event(f"task:{r.name}", cd, now):
+            if J["task_change"] and task_key(r.task) != task_key(c.get("task")) and alerts.event(
+                    f"task:{r.name}", cd, now):
                 alerts.send(header_line(cfg, "🔄", f"{r.name} đổi tác vụ") +
                             f"\n{c.get('task') or '?'} → {r.task or '?'}\n\n" + fmt_row(r))
                 c["task"] = r.task
