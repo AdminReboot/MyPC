@@ -4,3 +4,5 @@ state.json
 *.tmp
 logs/
 __pycache__/
+build/
+dist/

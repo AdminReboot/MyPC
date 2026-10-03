@@ -29,10 +29,25 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
 import sysops
+from version import __version__
 
 psutil = sysops.psutil
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FROZEN = getattr(sys, "frozen", False)  # chạy từ bản cài đặt (PyInstaller)
+APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
+
+
+def _data_dir():
+    """Nơi lưu config/state/logs: bản cài đặt dùng %LOCALAPPDATA%/NetWatchdog (Program Files chỉ đọc),
+    chạy từ mã nguồn dùng thư mục chứa script. Ghi đè bằng biến môi trường NETWATCHDOG_HOME."""
+    if os.environ.get("NETWATCHDOG_HOME"):
+        return os.environ["NETWATCHDOG_HOME"]
+    if FROZEN:
+        return os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "NetWatchdog")
+    return APP_DIR
+
+
+BASE_DIR = _data_dir()
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 STATE_PATH = os.path.join(BASE_DIR, "state.json")
 LOG_PATH = os.path.join(BASE_DIR, "logs", "netwatchdog.log")
@@ -85,6 +100,7 @@ def load_config(path=CONFIG_PATH):
 
 
 def save_json(path, data):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -313,7 +329,7 @@ class Watchdog:
     # ------------------------------------------------ Khởi động
     def on_start(self):
         cfg = self.cfg
-        msg = [f"🟢 NetWatchdog đã chạy trên {machine_name(cfg)}"]
+        msg = [f"🟢 NetWatchdog {__version__} đã chạy trên {machine_name(cfg)}"]
         mode = cfg.get("launch_apps", "after_reboot")
         if self.state.get("pending_launch"):
             msg.append(f"🔁 Máy vừa được khởi động lại vì: {self.state.get('reboot_reason') or 'mất mạng'}")

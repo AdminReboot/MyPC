@@ -212,3 +212,59 @@ def launch_app(app):
         return True, "OK"
     except Exception as e:  # noqa: BLE001
         return False, str(e)
+
+
+# ---------------------------------------------------------------- Tác vụ chạy nền (Task Scheduler)
+TASK_NAME = "NetWatchdog"
+
+
+def install_task(exe, args="--service"):
+    """Tạo Scheduled Task chạy NetWatchdog với quyền cao nhất mỗi khi user hiện tại đăng nhập.
+
+    Tự chạy lại nếu bị tắt. Cần quyền Administrator."""
+    domain, name = os.environ.get("USERDOMAIN", ""), os.environ.get("USERNAME", "")
+    user = f"{domain}\\{name}" if domain else name
+    code, out = powershell(
+        f"$a = New-ScheduledTaskAction -Execute {ps_quote(exe)} -Argument {ps_quote(args)} "
+        f"-WorkingDirectory {ps_quote(os.path.dirname(exe))}; "
+        f"$t = New-ScheduledTaskTrigger -AtLogOn -User {ps_quote(user)}; "
+        f"$p = New-ScheduledTaskPrincipal -UserId {ps_quote(user)} -LogonType Interactive -RunLevel Highest; "
+        "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
+        "-StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 "
+        "-RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew; "
+        f"Register-ScheduledTask -TaskName {ps_quote(TASK_NAME)} -Action $a -Trigger $t -Principal $p "
+        "-Settings $s -Description 'Theo doi mang, tu khoi phuc, bao cao Telegram' -Force | Out-Null")
+    return code == 0, out or "OK"
+
+
+def uninstall_task():
+    code, out = powershell(f"Stop-ScheduledTask -TaskName {ps_quote(TASK_NAME)} -ErrorAction SilentlyContinue; "
+                           f"Unregister-ScheduledTask -TaskName {ps_quote(TASK_NAME)} -Confirm:$false "
+                           "-ErrorAction SilentlyContinue")
+    return code == 0, out or "OK"
+
+
+def task_exists():
+    code, _ = run(["schtasks", "/Query", "/TN", TASK_NAME])
+    return code == 0
+
+
+def start_task():
+    code, out = run(["schtasks", "/Run", "/TN", TASK_NAME])
+    return code == 0, out or "OK"
+
+
+def stop_task():
+    """Dừng tác vụ và mọi tiến trình NetWatchdog đang chạy nền (trừ tiến trình hiện tại)."""
+    code, out = run(["schtasks", "/End", "/TN", TASK_NAME])
+    if psutil:
+        me = os.getpid()
+        for p in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                cmd = " ".join(p.info.get("cmdline") or []).lower()
+                if p.info["pid"] != me and ("--service" in cmd and "netwatchdog" in cmd
+                                            or "netwatchdog.py" in cmd and "settings_gui" not in cmd):
+                    p.kill()
+            except (psutil.Error, OSError):
+                continue
+    return code == 0, out or "OK"
