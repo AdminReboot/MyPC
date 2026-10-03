@@ -9,7 +9,20 @@ Chương trình chạy nền trên Windows 10/11. Nó kiểm tra Internet địn
 
 Mọi sự kiện được **báo lên Telegram**: mất mạng, đã thử những gì, có mạng lại (mất bao lâu, khôi phục bằng cách nào), khởi động lại máy, ứng dụng đã mở. Tin phát sinh lúc mất mạng được lưu ra đĩa và **gửi bù khi có mạng**, kể cả sau khi khởi động lại máy. Ngoài ra có báo cáo định kỳ: uptime, CPU, RAM, ổ đĩa, pin, Wi-Fi, IP LAN/WAN.
 
-## Cài đặt
+## Chạy nhanh bằng file .bat (không cần cài)
+
+Cần có **Python 3.10+** (<https://www.python.org/downloads/>, tick **"Add python.exe to PATH"**). Sau đó:
+
+| File | Tác dụng |
+|---|---|
+| **`NetWatchdog.bat`** | Nhấp đúp để chạy ngay ở chế độ nền, tự xin quyền Admin. Lần đầu sẽ tự cài `psutil`, tạo `config.json` và mở cửa sổ Cài đặt. |
+| `CaiDat.bat` | Mở cửa sổ Cài đặt (Telegram, Wi-Fi, card mạng, ứng dụng). |
+| `DungLai.bat` | Dừng NetWatchdog đang chạy nền. |
+| `run_dryrun.bat` | Chạy thử ở cửa sổ console, chỉ ghi log, không thao tác thật. |
+
+Cách này chỉ chạy đến khi tắt máy. Muốn **tự chạy mỗi lần mở máy** (bắt buộc để tự mở ứng dụng sau khi khởi động lại), hãy cài theo mục dưới. Có thể bỏ `NetWatchdog.bat` vào `shell:startup`, nhưng khi đó Windows sẽ hỏi UAC mỗi lần đăng nhập.
+
+## Cài đặt (tự chạy cùng Windows)
 
 1. Cài **Python 3.10+** từ <https://www.python.org/downloads/> và tick **"Add python.exe to PATH"**.
 2. Tải repo về (hoặc chỉ thư mục `netwatchdog/`) và đặt ở chỗ cố định, ví dụ `C:\Tools\netwatchdog`.
@@ -71,3 +84,4 @@ Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình:
 | `settings_gui.py` | Cửa sổ Cài đặt (Tkinter), ghi `config.json` |
 | `config.example.json` | Cấu hình mẫu. `config.json` thật chứa bot token nên **không commit** (đã có trong `.gitignore`) |
 | `install.ps1` / `uninstall.ps1` | Cài/gỡ Scheduled Task và lối tắt |
+| `NetWatchdog.bat` / `CaiDat.bat` / `DungLai.bat` | Chạy nhanh / mở Cài đặt / dừng, không cần cài |
