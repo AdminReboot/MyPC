@@ -166,7 +166,7 @@ class TelegramQueueTest(Base):
         wd._cfg = cfg
         sent, fail = [], [True]
 
-        def send_now(text, chat_id=None):
+        def send_now(text, chat_id=None, **kw):
             if fail[0]:
                 raise OSError("offline")
             sent.append(text)

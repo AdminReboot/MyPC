@@ -330,6 +330,16 @@ def _deaths(text):
     return Row(name="", deaths=text or "").death_count
 
 
+def level_change(a, b):
+    """"Lv109 (39.6%)" -> "Lv109 (41.0%)" thành "Lv109 +1.4%" / "Lv109 → Lv110 (+1 cấp)"; "" nếu không đọc được."""
+    la, lb = _level(a), _level(b)
+    if not (la and lb):
+        return ""
+    if la[0] == lb[0]:
+        return f"Lv{lb[0]} {lb[1] - la[1]:+.1f}%"
+    return f"Lv{la[0]} → Lv{lb[0]} ({lb[0] - la[0]:+d} cấp)"
+
+
 def day_summary(cfg, folder, day=None):
     """Tổng kết một ngày cho từng nhân vật: EXP/cấp, thu nhập, ngân lượng, số lần chết, đổi tác vụ, gián đoạn."""
     day = day or datetime.now()
@@ -382,6 +392,204 @@ def day_summary(cfg, folder, day=None):
                   f"   🏦 NL {a.get('ngan_luong') or '?'} → {b.get('ngan_luong') or '?'}",
                   f"   💀 chết {c['deaths']} · 🔄 đổi tác vụ {c['tasks']} · đang: {b.get('tac_vu') or '?'}"]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- Thống kê EXP / tiền vạn (từ CSV)
+NUM_RE = re.compile(r"(-?\d[\d,]*(?:\.\d+)?)\s*([^\d\s/]*)")
+EXP_UNITS = {"": 1, "k": 1e3, "m": 1e6, "b": 1e9, "t": 1e12}
+VAN_UNITS = {"vạn": 1, "v": 1, "lượng": 1e-4, "": 1e-4, "ức": 1e4, "triệu": 100, "tr": 100}
+
+
+def _num(text, units):
+    m = NUM_RE.search(text or "")
+    if not m:
+        return None
+    unit = unicodedata.normalize("NFC", m.group(2)).lower()
+    if unit not in units:
+        return None
+    return float(m.group(1).replace(",", "")) * units[unit]
+
+
+def parse_exp_rate(text):
+    """"1.8m/h" -> 1800000.0 (EXP mỗi giờ); None nếu không đọc được."""
+    return _num(text, EXP_UNITS)
+
+
+def parse_van(text):
+    """Tiền quy ra vạn: "225.0 vạn" -> 225.0, "-4214 lượng" -> -0.4214; None nếu không đọc được."""
+    return _num(text, VAN_UNITS)
+
+
+def fmt_exp(v):
+    a = abs(v)
+    for div, suf in ((1e9, "b"), (1e6, "m"), (1e3, "k")):
+        if a >= div:
+            return f"{v / div:.2f}".rstrip("0").rstrip(".") + suf
+    return f"{v:.0f}"
+
+
+def fmt_van(v, sign=True):
+    s = f"{v:+.1f}" if sign else f"{v:.1f}"
+    return "0.0" if s in ("+0.0", "-0.0") else s
+
+
+def history_days(folder):
+    """Các ngày có file lịch sử, mới nhất trước."""
+    try:
+        files = os.listdir(folder)
+    except OSError:
+        return []
+    days = []
+    for fn in files:
+        try:
+            days.append(datetime.strptime(fn[:10], "%Y-%m-%d").date())
+        except ValueError:
+            pass
+    return sorted(set(days), reverse=True)
+
+
+def load_history(folder, start, end):
+    """Các dòng CSV (có tên nhân vật) từ ngày `start` đến `end` (date, gồm cả 2 đầu), kèm khóa "t" = datetime."""
+    out, d = [], start
+    while d <= end:
+        try:
+            with open(os.path.join(folder, d.strftime("%Y-%m-%d") + ".csv"), encoding="utf-8-sig", newline="") as f:
+                for rec in csv.DictReader(f):
+                    if not rec.get("nhan_vat"):
+                        continue
+                    try:
+                        rec["t"] = datetime.strptime(rec["thoi_gian"], "%Y-%m-%d %H:%M:%S")
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    out.append(rec)
+        except OSError:
+            pass
+        d += timedelta(days=1)
+    out.sort(key=lambda r: r["t"])
+    return out
+
+
+def match_names(names, query):
+    """Lọc tên theo chuỗi "tên1, tên2" (không cần dấu); chuỗi rỗng = tất cả."""
+    raw = [q.strip() for q in (query or "").split(",") if q.strip()]
+    exact = [q for q in raw if q in names]  # tên đầy đủ (từ nút bấm) thì khớp đúng tên đó
+    qs = [norm(q) for q in raw if q not in names]
+    return [n for n in names if not raw or n in exact or any(q in norm(n) for q in qs)]
+
+
+def compute_stats(records, names=None, by="hour", start=None, end=None, poll_sec=60):
+    """Gộp EXP và tiền vạn kiếm được theo giờ (by="hour") hoặc theo ngày (by="day").
+
+    - EXP: cộng dồn EXP/giờ × thời gian giữa 2 lần đọc liên tiếp (bỏ qua khoảng gián đoạn dài) — ước tính.
+    - Tiền: chênh lệch Ngân lượng giữa 2 lần đọc liên tiếp, quy ra vạn (tiêu/chuyển tiền cũng bị trừ).
+    - names: danh sách nhân vật được chọn (None = tất cả).
+    Trả về dict: buckets [(datetime, {"exp", "van", "chars"})], chars {tên: {...}}, total_exp, total_van, active_hours.
+    """
+    gap_max = max(3 * poll_sec, 300)
+    sel = None if names is None else set(names)
+    trunc = (lambda t: t.replace(minute=0, second=0, microsecond=0)) if by == "hour" else \
+        (lambda t: t.replace(hour=0, minute=0, second=0, microsecond=0))
+    buckets, chars, prev, active = {}, {}, {}, set()
+    for rec in records:
+        name, t = rec["nhan_vat"], rec["t"]
+        if sel is not None and name not in sel:
+            continue
+        rate, van = parse_exp_rate(rec.get("exp_gio")), parse_van(rec.get("ngan_luong"))
+        c = chars.get(name)
+        if c is None:
+            chars[name] = c = {"exp": 0.0, "van": 0.0, "seconds": 0.0,
+                               "level_first": rec.get("cap_exp") or ""}
+        c.update(level_last=rec.get("cap_exp") or c.get("level_last", ""), task=rec.get("tac_vu") or "",
+                 tick=rec.get("tick") == "1", van_last=van if van is not None else c.get("van_last"))
+        key = trunc(t)
+        b = buckets.setdefault(key, {"exp": 0.0, "van": 0.0, "chars": set()})
+        b["chars"].add(name)
+        active.add(t.replace(minute=0, second=0, microsecond=0))
+        p = prev.get(name)
+        if p:
+            dt = (t - p["t"]).total_seconds()
+            if 0 < dt <= gap_max:
+                c["seconds"] += dt
+                if rate:
+                    e = rate * dt / 3600
+                    c["exp"] += e
+                    b["exp"] += e
+            if van is not None and p["van"] is not None:
+                c["van"] += van - p["van"]
+                b["van"] += van - p["van"]
+        prev[name] = {"t": t, "van": van if van is not None else (p or {}).get("van")}
+
+    # Điền các mốc trống để biểu đồ liền mạch
+    keys = sorted(buckets)
+    if by == "day" and start and end:
+        lo, hi = datetime.combine(start, datetime.min.time()), datetime.combine(end, datetime.min.time())
+    elif keys:
+        lo, hi = keys[0], keys[-1]
+    else:
+        lo = hi = None
+    step = timedelta(hours=1) if by == "hour" else timedelta(days=1)
+    out, k = [], lo
+    while k is not None and k <= hi:
+        out.append((k, buckets.get(k, {"exp": 0.0, "van": 0.0, "chars": set()})))
+        k += step
+    return {"buckets": out, "chars": chars, "by": by,
+            "total_exp": sum(c["exp"] for c in chars.values()),
+            "total_van": sum(c["van"] for c in chars.values()),
+            "active_hours": len(active)}
+
+
+def stats_range(by, day=None, days=7):
+    """(start, end) dạng date: theo giờ = một ngày, theo ngày = `days` ngày gần nhất."""
+    day = day or datetime.now().date()
+    return (day, day) if by == "hour" else (day - timedelta(days=days - 1), day)
+
+
+def build_stats(cfg, folder, by="hour", query="", day=None, days=7):
+    """Bảng thống kê cho Telegram (HTML). Trả về (text, tên các nhân vật có dữ liệu trong khoảng)."""
+    import html
+    start, end = stats_range(by, day, days)
+    records = load_history(folder, start, end)
+    all_names = sorted({r["nhan_vat"] for r in records})
+    title = (f"jxtdAuto theo giờ · {start:%d/%m}" if by == "hour"
+             else f"jxtdAuto theo ngày · {start:%d/%m} → {end:%d/%m}")
+    head = html.escape(header_line(cfg, "📊" if by == "hour" else "📈", title))
+    if not records:
+        return head + "\nChưa có dữ liệu (đã bật theo dõi jxtdAuto trong Cài đặt chưa?).", all_names
+    names = match_names(all_names, query)
+    if not names:
+        return head + "\n" + html.escape(f"Không thấy nhân vật “{query}”. Có: " + ", ".join(all_names)), all_names
+    s = compute_stats(records, names, by, start, end, cfg.get("jxtd", {}).get("poll_sec", 60))
+    who = f"👤 {names[0]}" if len(names) == 1 else (
+        f"👥 Tất cả ({len(names)} nhân vật)" if len(names) == len(all_names) else "👥 " + ", ".join(names))
+    rows = [("Giờ" if by == "hour" else "Ngày", "EXP", "Vạn")]
+    for k, b in s["buckets"]:
+        if by == "hour" and not b["chars"]:
+            continue
+        rows.append((f"{k:%H}h" if by == "hour" else f"{k:%d/%m}", fmt_exp(b["exp"]) if b["chars"] else "-",
+                     fmt_van(b["van"]) if b["chars"] else "-"))
+    rows.append(("Tổng", fmt_exp(s["total_exp"]), fmt_van(s["total_van"])))
+    w = [max(len(r[i]) for r in rows) for i in range(3)]
+    table = "\n".join(f"{a:<{w[0]}}  {b:>{w[1]}}  {c:>{w[2]}}" for a, b, c in rows)
+    lines = [head, html.escape(who), f"<pre>{html.escape(table)}</pre>"]
+    if s["active_hours"]:
+        lines.append(f"⏱ TB mỗi giờ: {fmt_exp(s['total_exp'] / s['active_hours'])} EXP · "
+                     f"{fmt_van(s['total_van'] / s['active_hours'])} vạn")
+    if len(names) > 1:
+        lines.append("")
+        for n, c in sorted(s["chars"].items(), key=lambda kv: -kv[1]["exp"]):
+            lc = level_change(c["level_first"], c["level_last"])
+            lines.append(html.escape(f"{'✅' if c['tick'] else '⬜'} {n}: {fmt_exp(c['exp'])} EXP · "
+                                     f"{fmt_van(c['van'])} vạn" + (f" · {lc}" if lc else "")))
+    else:
+        c = s["chars"].get(names[0])
+        if c:
+            lc = level_change(c["level_first"], c["level_last"])
+            lines.append(html.escape(f"📈 {c['level_first'] or '?'} → {c['level_last'] or '?'}"
+                                     + (f" ({lc})" if lc else "")))
+            lines.append(html.escape(f"🏦 NL hiện tại: {fmt_van(c['van_last'], sign=False)} vạn · đang: {c['task'] or '?'}")
+                         if c.get("van_last") is not None else html.escape(f"Đang: {c['task'] or '?'}"))
+    lines.append("<i>EXP ước tính từ EXP/giờ; tiền = chênh lệch Ngân lượng.</i>")
+    return "\n".join(lines), all_names
 
 
 # ---------------------------------------------------------------- Chụp cửa sổ

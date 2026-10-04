@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from datetime import datetime
 from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 import jxtd
@@ -37,7 +38,8 @@ DARK = {
 }
 
 ICONS = {"home": "", "send": "", "wifi": "", "adapter": "",
-         "restart": "", "check": "", "refresh": "", "game": "", "folder": ""}
+         "restart": "", "check": "", "refresh": "", "game": "", "folder": "",
+         "chart": ""}
 
 
 def windows_dark():
@@ -210,6 +212,99 @@ class Tile(tk.Frame):
             self.bar.create_rectangle(0, 0, w * min(self.pct, 100) / 100, h, fill=color, outline="")
 
 
+class BarChart(tk.Canvas):
+    """Biểu đồ cột một chuỗi số liệu (có số âm), lưới mờ, di chuột để xem giá trị từng cột."""
+
+    def __init__(self, master, app, fmt, height=200):
+        c = app.c
+        super().__init__(master, height=app.S(height), bg=c["surface"], highlightthickness=0, bd=0)
+        self.app, self.fmt = app, fmt
+        self.labels, self.values, self.tips, self.hover = [], [], [], None
+        self.bind("<Configure>", lambda e: self.draw())
+        self.bind("<Motion>", self._motion)
+        self.bind("<Leave>", lambda e: self._set_hover(None))
+
+    def set(self, labels, values, tips=None):
+        self.labels, self.values, self.tips, self.hover = labels, values, tips or labels, None
+        self.draw()
+
+    def _geom(self):
+        S = self.app.S
+        w, h = self.winfo_width(), self.winfo_height()
+        return S(64), S(12), w - S(12), h - S(26)  # trái, trên, phải, dưới của vùng vẽ
+
+    def _set_hover(self, i):
+        if i != self.hover:
+            self.hover = i
+            self.draw()
+
+    def _motion(self, e):
+        if not self.values:
+            return
+        x0, _, x1, _ = self._geom()
+        slot = (x1 - x0) / len(self.values)
+        i = int((e.x - x0) // slot) if slot > 0 else -1
+        self._set_hover(i if 0 <= i < len(self.values) and x0 <= e.x <= x1 else None)
+
+    def draw(self):
+        c, S, app = self.app.c, self.app.S, self.app
+        self.delete("all")
+        x0, y0, x1, y1 = self._geom()
+        if x1 <= x0 or y1 <= y0:
+            return
+        if not self.values:
+            self.create_text((x0 + x1) / 2, (y0 + y1) / 2, text="Chưa có dữ liệu", fill=c["muted"], font=app.f_small)
+            return
+        hi, lo = max(0.0, max(self.values)), min(0.0, min(self.values))
+        if hi == lo:
+            hi = 1.0
+        nice = _nice_step((hi - lo) / 4)
+        hi, lo = nice * -(-hi // nice), nice * (lo // nice)
+        y = lambda v: y1 - (v - lo) / (hi - lo) * (y1 - y0)  # noqa: E731
+        v = lo
+        while v <= hi + nice / 2:  # lưới + nhãn trục
+            yy = y(v)
+            self.create_line(x0, yy, x1, yy, fill=c["border"] if v else c["muted"], width=1)
+            self.create_text(x0 - S(8), yy, text=self.fmt(v), anchor="e", fill=c["muted"], font=app.f_tiny)
+            v += nice
+        n = len(self.values)
+        slot = (x1 - x0) / n
+        bw = max(2, min(S(28), slot - S(4)))
+        every = max(1, int(S(44) // slot) + 1)  # nhãn trục X thưa ra để không chồng nhau
+        for i, val in enumerate(self.values):
+            cx = x0 + slot * (i + .5)
+            if i == self.hover:
+                self.create_rectangle(x0 + slot * i, y0, x0 + slot * (i + 1), y1, fill=c["surface2"], outline="")
+            if val:
+                color = c["accent_hover"] if i == self.hover else (c["accent"] if val > 0 else c["danger"])
+                self.create_rectangle(cx - bw / 2, min(y(val), y(0)), cx + bw / 2, max(y(val), y(0)),
+                                      fill=color, outline="")
+            if i % every == 0:
+                self.create_text(cx, y1 + S(6), text=self.labels[i], anchor="n", fill=c["muted"], font=app.f_tiny)
+        self.create_line(x0, y(0), x1, y(0), fill=c["muted"])
+        if self.hover is not None:
+            i = self.hover
+            cx = x0 + slot * (i + .5)
+            txt = f"{self.tips[i]}:  {self.fmt(self.values[i])}"
+            t = self.create_text(0, 0, text=txt, anchor="nw", fill=c["text"], font=app.f_bold)
+            bx0, by0, bx1, by1 = self.bbox(t)
+            tw, th = bx1 - bx0, by1 - by0
+            tx = min(max(x0, cx - tw / 2), x1 - tw)
+            self.coords(t, tx, y0)
+            bg = self.create_rectangle(tx - S(8), y0 - S(4), tx + tw + S(8), y0 + th + S(4), fill=c["surface"],
+                                       outline=c["border"])
+            self.tag_raise(t, bg)
+
+
+def _nice_step(raw):
+    """Bước lưới "đẹp" (1, 2, 5 × 10^n) gần với raw."""
+    import math
+    if raw <= 0:
+        return 1.0
+    p = 10 ** math.floor(math.log10(raw))
+    return next(m * p for m in (1, 2, 5, 10) if m * p >= raw)
+
+
 class OrderedPicker(tk.Frame):
     """Hai danh sách: bên trái các mục có sẵn, bên phải các mục đã chọn (có thứ tự ưu tiên)."""
 
@@ -372,6 +467,7 @@ class SettingsApp(tk.Tk):
                 ("adapters", "adapter", "Card mạng", self.page_adapters),
                 ("reboot", "restart", "Khởi động lại & Ứng dụng", self.page_reboot),
                 ("jxtd", "game", "jxtdAuto", self.page_jxtd),
+                ("stats", "chart", "Thống kê jxtdAuto", self.page_stats),
                 ("check", "check", "Kiểm tra mạng", self.page_check)):
             page = builder()
             page.grid(row=0, column=0, sticky="nsew")
@@ -435,6 +531,15 @@ class SettingsApp(tk.Tk):
             st.map(name, background=[("disabled", c["seg"]), ("pressed", hover), ("active", hover)],
                    lightcolor=[("pressed", hover), ("active", hover)], darkcolor=[("pressed", hover), ("active", hover)],
                    foreground=[("disabled", c["muted"])], bordercolor=[("disabled", c["seg"])])
+        st.configure("TCombobox", fieldbackground=c["input"], background=c["surface"], foreground=c["text"],
+                     arrowcolor=c["muted"], bordercolor=c["border"], lightcolor=c["input"], darkcolor=c["input"],
+                     padding=(10, 5), selectbackground=c["input"], selectforeground=c["text"])
+        st.map("TCombobox", fieldbackground=[("readonly", c["input"])], foreground=[("readonly", c["text"])],
+               bordercolor=[("focus", c["accent"])])
+        self.option_add("*TCombobox*Listbox.background", c["input"])
+        self.option_add("*TCombobox*Listbox.foreground", c["text"])
+        self.option_add("*TCombobox*Listbox.selectBackground", c["accent"])
+        self.option_add("*TCombobox*Listbox.selectForeground", c["on_accent"])
         st.configure("Treeview", background=c["surface"], fieldbackground=c["surface"], foreground=c["text"],
                      rowheight=self.S(34), borderwidth=0, relief="flat")
         st.map("Treeview", background=[("selected", c["accent_soft"])], foreground=[("selected", c["text"])])
@@ -530,6 +635,8 @@ class SettingsApp(tk.Tk):
             self._nav_paint(k)
         if key == "home":
             self.refresh_status()
+        elif key == "stats":
+            self.stats_load()
 
     def _build_footer(self, main):
         c = self.c
@@ -661,7 +768,7 @@ class SettingsApp(tk.Tk):
         self.gap(p.body)
         card = Card(p.body, self, "Thông báo & lệnh")
         card.pack(fill="x")
-        self.toggle(card, "Nhận lệnh điều khiển", "/status, /apps, /fix, /reboot yes, /cancel — chỉ từ Chat ID trên.",
+        self.toggle(card, "Nhận lệnh điều khiển", "Lệnh và nút bấm (/menu) trên Telegram — chỉ từ Chat ID trên.",
                     "tg_cmds", t.get("commands", True))
         self.number(card, "Báo cáo định kỳ", "Gửi tình trạng máy theo chu kỳ. 0 = tắt.", "heartbeat",
                     self.cfg["report"].get("heartbeat_min", 360), "phút")
@@ -848,6 +955,241 @@ class SettingsApp(tk.Tk):
         self.jx_info.config(text=f"{len(snap.rows)} nhân vật lúc {time.strftime('%H:%M:%S')}{lic}",
                             fg=self.c["muted"])
 
+    # ------------------------------------------------ thống kê jxtdAuto
+    def page_stats(self):
+        c = self.c
+        p = Page(self.pages_box, self, "Thống kê jxtdAuto",
+                 "EXP và tiền vạn các nhân vật kiếm được theo giờ hoặc theo ngày, tính từ lịch sử jxtdAuto.")
+        self.st_records, self.st_names, self.st_sel = [], [], None
+        self.st_loading = self.st_reload = False
+        self.st_by = tk.StringVar(value="hour")
+        self.st_range = tk.StringVar(value="7")
+        self.st_day = tk.StringVar()
+        self.st_days = {}
+
+        flt = Card(p.body, self)
+        flt.pack(fill="x")
+        row = tk.Frame(flt, bg=c["surface"])
+        row.pack(fill="x", padx=20, pady=(16, 10))
+        Segmented(row, self, self.st_by, (("hour", "Theo giờ"), ("day", "Theo ngày"))).pack(side="left")
+        self.st_opts = tk.Frame(row, bg=c["surface"])
+        self.st_opts.pack(side="left", padx=16)
+        self.st_day_box = ttk.Combobox(self.st_opts, textvariable=self.st_day, state="readonly", width=20)
+        self.st_range_seg = Segmented(self.st_opts, self, self.st_range,
+                                      (("7", "7 ngày"), ("14", "14 ngày"), ("30", "30 ngày")))
+        self.st_btn = ttk.Button(row, text="Làm mới", command=self.stats_load)
+        self.st_btn.pack(side="right")
+        self.st_info = tk.Label(row, text="", font=self.f_small, bg=c["surface"], fg=c["muted"])
+        self.st_info.pack(side="right", padx=12)
+        tk.Frame(flt, bg=c["border"], height=1).pack(fill="x", padx=20)
+        crow = tk.Frame(flt, bg=c["surface"])
+        crow.pack(fill="x", padx=20, pady=(10, 4))
+        tk.Label(crow, text="NHÂN VẬT", font=self.f_tiny, bg=c["surface"], fg=c["muted"]).pack(side="left")
+        allb = tk.Label(crow, text="Chọn tất cả", font=self.f_small, bg=c["surface"], fg=c["accent"], cursor="hand2")
+        allb.pack(side="left", padx=12)
+        allb.bind("<Button-1>", lambda e: self._stats_pick(None))
+        self.st_chips = tk.Frame(flt, bg=c["surface"])
+        self.st_chips.pack(fill="x", padx=20, pady=(2, 6))
+        tk.Label(flt, text="Bấm một tên để xem riêng nhân vật đó, bấm thêm tên khác để gộp nhiều nhân vật.",
+                 font=self.f_small, bg=c["surface"], fg=c["muted"]).pack(anchor="w", padx=20, pady=(0, 14))
+
+        self.gap(p.body)
+        grid = tk.Frame(p.body, bg=c["bg"])
+        grid.pack(fill="x")
+        self.st_tiles = {}
+        for i, (key, title) in enumerate((("exp", "EXP kiếm được"), ("van", "Tiền kiếm được"),
+                                          ("exp_h", "EXP trung bình / giờ"), ("van_h", "Tiền trung bình / giờ"))):
+            t = Tile(grid, self, title)
+            t.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 8, 0))
+            grid.columnconfigure(i, weight=1, uniform="st")
+            self.st_tiles[key] = t
+
+        self.st_charts = {}
+        for key, title, fmt in (("exp", "EXP kiếm được", jxtd.fmt_exp),
+                                ("van", "Tiền kiếm được (vạn)", lambda v: jxtd.fmt_van(v, sign=False))):
+            self.gap(p.body)
+            card = Card(p.body, self, title)
+            card.pack(fill="x")
+            ch = BarChart(card, self, fmt)
+            ch.pack(fill="x", padx=20, pady=(4, 16))
+            self.st_charts[key] = (card, ch)
+
+        self.gap(p.body)
+        card = Card(p.body, self, "Chi tiết theo thời gian")
+        card.pack(fill="x")
+        self.st_tree = self._stats_tree(card, (("t", "THỜI GIAN", 150), ("exp", "EXP", 110), ("van", "TIỀN (VẠN)", 110),
+                                               ("n", "SỐ NHÂN VẬT", 110)))
+        self.gap(p.body)
+        card = Card(p.body, self, "Theo nhân vật")
+        card.pack(fill="x")
+        self.st_char_tree = self._stats_tree(card, (
+            ("name", "NHÂN VẬT", 130), ("exp", "EXP", 85), ("van", "TIỀN (VẠN)", 85), ("lv", "CẤP", 190),
+            ("hours", "GIỜ CHẠY", 80), ("money", "NGÂN LƯỢNG", 105), ("task", "TÁC VỤ CUỐI", 120)))
+        self.note(p.body, "EXP ước tính bằng EXP/giờ × thời gian giữa các lần đọc (bỏ qua lúc jxtdAuto gián đoạn). "
+                          "Tiền = chênh lệch Ngân lượng, nên tiêu hoặc chuyển tiền cũng bị trừ vào.")
+
+        self.st_by.trace_add("write", lambda *a: self._stats_mode())
+        self.st_range.trace_add("write", lambda *a: self.stats_load())
+        self.st_day_box.bind("<<ComboboxSelected>>", lambda e: self.stats_load())
+        self._stats_mode(load=False)
+        return p
+
+    def _stats_tree(self, card, cols):
+        box = tk.Frame(card, bg=self.c["surface"], highlightthickness=1, highlightbackground=self.c["border"])
+        box.pack(fill="x", padx=20, pady=(6, 16))
+        tree = ttk.Treeview(box, columns=[k for k, _, _ in cols], show="headings", height=3)
+        for k, title, w in cols:
+            num = k in ("exp", "van", "n", "hours", "money")
+            tree.heading(k, text=title, anchor="e" if num else "w")
+            tree.column(k, width=self.S(w), anchor="e" if num else "w", stretch=k in ("t", "task", "name"))
+        tree.pack(fill="x")
+        return tree
+
+    def _stats_mode(self, load=True):
+        hour = self.st_by.get() == "hour"
+        (self.st_range_seg.pack_forget if hour else self.st_day_box.pack_forget)()
+        (self.st_day_box if hour else self.st_range_seg).pack(side="left")
+        unit = "giờ" if hour else "ngày"
+        self.st_charts["exp"][0].winfo_children()[0].config(text=f"EXP kiếm được theo {unit}")
+        self.st_charts["van"][0].winfo_children()[0].config(text=f"Tiền kiếm được theo {unit} (vạn)")
+        if load:
+            self.stats_load()
+
+    def _stats_fill_days(self):
+        today = datetime.now().date()
+        days = jxtd.history_days(JX_HISTORY_DIR)
+        if today not in days:
+            days.insert(0, today)
+        self.st_days = {(f"{d:%d/%m/%Y}" + (" (hôm nay)" if d == today else "")): d for d in days}
+        self.st_day_box.config(values=list(self.st_days))
+        if self.st_day.get() not in self.st_days:
+            self.st_day.set(next(iter(self.st_days)))
+
+    def _stats_period(self):
+        if self.st_by.get() == "hour":
+            return jxtd.stats_range("hour", self.st_days.get(self.st_day.get()))
+        return jxtd.stats_range("day", days=int(self.st_range.get()))
+
+    def stats_load(self):
+        if self.st_loading:  # đang đọc dở: đọc lại khi xong (đã đổi ngày/chế độ)
+            self.st_reload = True
+            return
+        self.st_reload = False
+        self._stats_fill_days()
+        self.st_loading = True
+        self.st_btn.state(["disabled"])
+        self.st_info.config(text="Đang đọc lịch sử…")
+        start, end = self._stats_period()
+
+        def work():
+            try:
+                recs, err = jxtd.load_history(JX_HISTORY_DIR, start, end), ""
+            except Exception as e:  # noqa: BLE001
+                recs, err = [], str(e)
+            self.after(0, lambda: self._stats_loaded(recs, err))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _stats_loaded(self, recs, err):
+        self.st_loading = False
+        self.st_btn.state(["!disabled"])
+        if self.st_reload:
+            self.stats_load()
+            return
+        self.st_records = recs
+        names = sorted({r["nhan_vat"] for r in recs})
+        if names != self.st_names:
+            self.st_names = names
+            if self.st_sel is not None:
+                self.st_sel &= set(names)
+                if not self.st_sel:
+                    self.st_sel = None
+            self._stats_chips()
+        if err:
+            self.st_info.config(text=f"Lỗi đọc lịch sử: {err}", fg=self.c["danger"])
+        elif not recs:
+            self.st_info.config(text="Chưa có dữ liệu — bật theo dõi ở trang jxtdAuto", fg=self.c["muted"])
+        else:
+            self.st_info.config(text=f"Cập nhật lúc {time.strftime('%H:%M:%S')}", fg=self.c["muted"])
+        self.stats_render()
+
+    def _stats_chips(self):
+        c = self.c
+        for w in self.st_chips.winfo_children():
+            w.destroy()
+        if not self.st_names:
+            tk.Label(self.st_chips, text="(chưa có nhân vật nào trong khoảng thời gian này)", font=self.f_small,
+                     bg=c["surface"], fg=c["muted"]).grid(row=0, column=0, sticky="w")
+            return
+        per_row = 6
+        for i, n in enumerate(self.st_names):
+            on = self.st_sel is None or n in self.st_sel
+            lb = tk.Label(self.st_chips, text=("✓ " if on else "") + n, padx=12, pady=4, cursor="hand2",
+                          font=self.f_bold if on else self.f_body,
+                          bg=c["accent_soft"] if on else c["seg"], fg=c["accent"] if on else c["muted"])
+            lb.grid(row=i // per_row, column=i % per_row, sticky="w", padx=(0, 6), pady=3)
+            lb.bind("<Button-1>", lambda e, n=n: self._stats_pick(n))
+        self.pages["stats"].relayout()
+
+    def _stats_pick(self, name):
+        """None = tất cả; đang xem tất cả mà bấm một tên = xem riêng tên đó; sau đó bấm để thêm/bớt."""
+        if name is None:
+            self.st_sel = None
+        elif self.st_sel is None:
+            self.st_sel = {name}
+        else:
+            self.st_sel ^= {name}
+            if not self.st_sel or self.st_sel == set(self.st_names):
+                self.st_sel = None
+        self._stats_chips()
+        self.stats_render()
+
+    def stats_render(self):
+        by = self.st_by.get()
+        start, end = self._stats_period()
+        poll = self.cfg.get("jxtd", {}).get("poll_sec", 60)
+        names = None if self.st_sel is None else sorted(self.st_sel)
+        s = jxtd.compute_stats(self.st_records, names, by, start, end, poll)
+        n_chars = len(s["chars"])
+        hours = s["active_hours"]
+        who = "tất cả nhân vật" if names is None else (names[0] if len(names) == 1 else f"{len(names)} nhân vật")
+        period = f"{start:%d/%m}" if by == "hour" else f"{start:%d/%m} → {end:%d/%m}"
+        t = self.st_tiles
+        t["exp"].set(jxtd.fmt_exp(s["total_exp"]), period)
+        t["van"].set(jxtd.fmt_van(s["total_van"]) + " vạn", who if n_chars else "không có dữ liệu")
+        t["exp_h"].set(jxtd.fmt_exp(s["total_exp"] / hours) if hours else "—", f"trên {hours} giờ có chạy")
+        t["van_h"].set((jxtd.fmt_van(s["total_van"] / hours) + " vạn") if hours else "—", f"trên {hours} giờ có chạy")
+
+        bk = s["buckets"]
+        if by == "hour":
+            labels = [f"{k:%H}h" for k, _ in bk]
+            tips = [f"{k:%H}:00–{k:%H}:59" for k, _ in bk]
+        else:
+            labels = [f"{k:%d/%m}" for k, _ in bk]
+            tips = [f"Ngày {k:%d/%m/%Y}" for k, _ in bk]
+        self.st_charts["exp"][1].set(labels, [b["exp"] for _, b in bk], tips)
+        self.st_charts["van"][1].set(labels, [b["van"] for _, b in bk], tips)
+
+        tree = self.st_tree
+        tree.delete(*tree.get_children())
+        for (k, b), tip in zip(bk, tips):
+            if b["chars"]:
+                tree.insert("", tk.END, values=(tip, jxtd.fmt_exp(b["exp"]), jxtd.fmt_van(b["van"]), len(b["chars"])))
+        if tree.get_children():
+            tree.insert("", tk.END, values=("Tổng", jxtd.fmt_exp(s["total_exp"]), jxtd.fmt_van(s["total_van"]), n_chars))
+        tree.configure(height=max(1, len(tree.get_children())))
+
+        tree = self.st_char_tree
+        tree.delete(*tree.get_children())
+        for n, ch in sorted(s["chars"].items(), key=lambda kv: -kv[1]["exp"]):
+            lv = jxtd.level_change(ch["level_first"], ch["level_last"]) or ch["level_last"]
+            money = ch.get("van_last")
+            tree.insert("", tk.END, values=(("✓ " if ch["tick"] else "✗ ") + n, jxtd.fmt_exp(ch["exp"]),
+                                            jxtd.fmt_van(ch["van"]), lv, f"{ch['seconds'] / 3600:.1f}",
+                                            "" if money is None else jxtd.fmt_van(money, sign=False),
+                                            ch["task"]))
+        tree.configure(height=max(1, len(tree.get_children())))
+        self.pages["stats"].relayout()
+
     # ------------------------------------------------ tổng quan
     def _paint_hero(self, online):
         c = self.c
@@ -923,6 +1265,8 @@ class SettingsApp(tk.Tk):
         self._tick_n = getattr(self, "_tick_n", 0) + 1
         if self._tick_n % 30 == 0 and self.current == "home":
             self.refresh_status()
+        elif self._tick_n % 60 == 0 and self.current == "stats" and self._stats_period()[1] == datetime.now().date():
+            self.stats_load()
         elif self._tick_n % 10 == 0:
             self._paint_service(service_running())
         self.after(1000, self._tick)
