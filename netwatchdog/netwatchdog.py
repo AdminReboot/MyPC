@@ -219,9 +219,27 @@ class Telegram:
             raise RuntimeError(res.get("description", "Telegram lỗi"))
         return res.get("result")
 
-    def send_now(self, text, chat_id=None):
-        self.call("sendMessage", {"chat_id": chat_id or self.chat_id, "text": text[:4000],
-                                  "disable_web_page_preview": "true"})
+    def send_now(self, text, chat_id=None, markup=None, html=False):
+        params = {"chat_id": chat_id or self.chat_id, "text": text[:4000], "disable_web_page_preview": "true"}
+        if markup:
+            params["reply_markup"] = json.dumps(markup, ensure_ascii=False)
+        if html:
+            params["parse_mode"] = "HTML"
+        return self.call("sendMessage", params)
+
+    def edit(self, message_id, text, markup=None, html=False):
+        """Sửa tin đã gửi (dùng khi bấm nút inline); bỏ qua lỗi "message is not modified"."""
+        params = {"chat_id": self.chat_id, "message_id": message_id, "text": text[:4000],
+                  "disable_web_page_preview": "true"}
+        if markup:
+            params["reply_markup"] = json.dumps(markup, ensure_ascii=False)
+        if html:
+            params["parse_mode"] = "HTML"
+        try:
+            self.call("editMessageText", params)
+        except RuntimeError as e:
+            if "not modified" not in str(e):
+                raise
 
     def send_photo(self, png, caption="", timeout=60):
         """Gửi ảnh PNG ngay (không xếp hàng đợi — ảnh chỉ có ý nghĩa lúc vừa chụp)."""
@@ -239,12 +257,12 @@ class Telegram:
         if not res.get("ok"):
             raise RuntimeError(res.get("description", "Telegram lỗi"))
 
-    def send(self, text):
+    def send(self, text, html=False):
         """Xếp tin vào hàng đợi (lưu đĩa) rồi thử gửi ngay."""
         log.info("Telegram << %s", text.replace("\n", " | "))
         with self.state.lock:
             outbox = self.state.data.setdefault("outbox", [])
-            outbox.append({"ts": time.time(), "text": text})
+            outbox.append({"ts": time.time(), "text": text, **({"html": True} if html else {})})
             del outbox[:-self.MAX_OUTBOX]
             self.state.save()
         self.flush()
@@ -264,7 +282,7 @@ class Telegram:
                 if time.time() - item["ts"] > 120:
                     text = f"⏳ [gửi trễ — sự kiện lúc {now_str(item['ts'])}]\n{text}"
                 try:
-                    self.send_now(text)
+                    self.send_now(text, html=item.get("html", False))
                 except Exception as e:  # noqa: BLE001
                     log.debug("Chưa gửi được Telegram: %s", e)
                     return
@@ -536,7 +554,7 @@ class Watchdog:
         return False
 
     # ------------------------------------------------ Lệnh Telegram
-    HELP = ("Lệnh NetWatchdog:\n"
+    HELP = ("Lệnh NetWatchdog (hoặc bấm các nút bên dưới khung chat):\n"
             "/status — tình trạng máy\n"
             "/apps — mở các ứng dụng đã chọn\n"
             "/fix — chạy quy trình khôi phục mạng ngay\n"
@@ -545,44 +563,104 @@ class Watchdog:
             "/jx — bảng nhân vật jxtdAuto (/jx <tên> — một nhân vật, không cần dấu)\n"
             "/jx_gon — jxtdAuto rút gọn, mỗi nhân vật một dòng\n"
             "/jx_homnay — tổng kết jxtdAuto trong ngày\n"
+            "/jx_gio — EXP & tiền vạn theo giờ hôm nay (/jx_gio <tên1, tên2>)\n"
+            "/jx_ngay — EXP & tiền vạn theo ngày, 7 ngày (/jx_ngay 30 — 30 ngày)\n"
+            "/jx_nv — chọn nhân vật bằng nút bấm\n"
             "/jx_anh — ảnh chụp cửa sổ jxtdAuto\n"
+            "/menu — hiện bàn phím nút bấm · /an_nut — ẩn\n"
             "/help — trợ giúp")
 
+    # Bàn phím nút bấm cố định dưới khung chat: chữ trên nút -> lệnh
+    KEYBOARD = [[("🎮 Bảng JX", "/jx"), ("📋 JX gọn", "/jx_gon"), ("📸 Ảnh JX", "/jx_anh")],
+                [("📊 Theo giờ", "/jx_gio"), ("📈 Theo ngày", "/jx_ngay"), ("📅 Hôm nay", "/jx_homnay")],
+                [("👤 Nhân vật", "/jx_nv"), ("🖥 Tình trạng", "/status"), ("❓ Trợ giúp", "/help")]]
+    BUTTONS = {label: cmd for row in KEYBOARD for label, cmd in row}
+    BOT_COMMANDS = [("jx", "Bảng nhân vật jxtdAuto"), ("jx_gon", "jxtdAuto rút gọn"),
+                    ("jx_gio", "EXP & tiền vạn theo giờ"), ("jx_ngay", "EXP & tiền vạn theo ngày"),
+                    ("jx_homnay", "Tổng kết jxtdAuto hôm nay"), ("jx_nv", "Chọn nhân vật"),
+                    ("jx_anh", "Ảnh chụp cửa sổ jxtdAuto"), ("status", "Tình trạng máy"),
+                    ("apps", "Mở các ứng dụng đã chọn"), ("fix", "Khôi phục mạng ngay"),
+                    ("cancel", "Hủy khởi động lại"), ("menu", "Hiện bàn phím nút bấm"), ("help", "Trợ giúp")]
+
+    @classmethod
+    def reply_keyboard(cls):
+        return {"keyboard": [[{"text": label} for label, _ in row] for row in cls.KEYBOARD],
+                "resize_keyboard": True, "is_persistent": True, "input_field_placeholder": "Chọn lệnh…"}
+
     def command_loop(self):
+        commands_set = False
         while not self.stop_event.is_set():
             if not self.tg.enabled or not self.online:
                 self.sleep(10)
                 continue
+            if not commands_set:  # menu lệnh "/" của bot
+                try:
+                    self.tg.call("setMyCommands", {"commands": json.dumps(
+                        [{"command": c, "description": d} for c, d in self.BOT_COMMANDS], ensure_ascii=False)})
+                    commands_set = True
+                except Exception as e:  # noqa: BLE001
+                    log.debug("setMyCommands lỗi: %s", e)
             try:
                 updates = self.tg.call("getUpdates", {"offset": self.state.get("tg_offset", 0), "timeout": 25,
-                                                      "allowed_updates": '["message"]'}, timeout=35)
+                                                      "allowed_updates": '["message", "callback_query"]'},
+                                       timeout=35)
             except Exception as e:  # noqa: BLE001
                 log.debug("getUpdates lỗi: %s", e)
                 self.sleep(10)
                 continue
             for u in updates or []:
                 self.state.set(tg_offset=u["update_id"] + 1)
-                msg = u.get("message") or {}
+                cq = u.get("callback_query")
+                msg = (cq or {}).get("message") or u.get("message") or {}
                 if str((msg.get("chat") or {}).get("id")) != self.tg.chat_id:
                     continue  # chỉ nhận lệnh từ chat đã cấu hình
-                if time.time() - msg.get("date", 0) > 600:
+                if not cq and time.time() - msg.get("date", 0) > 600:
                     continue  # bỏ lệnh cũ tồn đọng (vd. /reboot gửi từ lâu)
                 try:
-                    reply = self.handle_command((msg.get("text") or "").strip())
+                    if cq:
+                        try:
+                            self.tg.call("answerCallbackQuery", {"callback_query_id": cq["id"]})
+                        except Exception:  # noqa: BLE001
+                            pass
+                        reply = self.handle_callback(cq.get("data") or "")
+                    else:
+                        reply = self.handle_command((msg.get("text") or "").strip())
                 except Exception as e:  # noqa: BLE001
                     log.exception("Lỗi xử lý lệnh")
                     reply = f"❌ Lỗi: {e}"
                 if reply:
-                    self.tg.send(reply)
+                    self.deliver(reply, msg.get("message_id") if cq else None)
+
+    def deliver(self, reply, edit_id=None):
+        """Gửi trả lời có nút bấm ngay; lỗi thì xếp hàng đợi dạng chữ (không kèm nút)."""
+        markup, html, edit = getattr(reply, "markup", None), getattr(reply, "html", False), getattr(reply, "edit", False)
+        if markup is None and not edit:
+            self.tg.send(str(reply), html=html)
+            return
+        try:
+            if edit and edit_id:
+                self.tg.edit(edit_id, str(reply), markup, html)
+            else:
+                self.tg.send_now(str(reply), markup=markup, html=html)
+            log.info("Telegram << %s", str(reply).replace("\n", " | "))
+        except Exception as e:  # noqa: BLE001
+            log.debug("Gửi kèm nút lỗi (%s), xếp hàng gửi lại", e)
+            self.tg.send(str(reply), html=html)
 
     def handle_command(self, text):
+        text = self.BUTTONS.get(text, text)
         if not text.startswith("/"):
             return ""
         parts = text.split()
         cmd = parts[0].split("@")[0].lower()
         arg = parts[1].lower() if len(parts) > 1 else ""
         if cmd in ("/status", "/start"):
-            return status_report(self.cfg, self.state)
+            report = status_report(self.cfg, self.state)
+            return Reply(report, markup=self.reply_keyboard()) if cmd == "/start" else report
+        if cmd == "/menu":
+            return Reply("⌨️ Đã hiện bàn phím nút bấm.", markup=self.reply_keyboard())
+        if cmd == "/an_nut":
+            return Reply("Đã ẩn bàn phím. Gửi /menu để hiện lại.", markup={"remove_keyboard": True})
         if cmd.startswith("/jx"):
             return self.jx_command(cmd, " ".join(parts[1:]))
         if cmd == "/apps":
@@ -605,7 +683,7 @@ class Watchdog:
             if ok:
                 self.state.set(pending_launch=False)
             return "✅ Đã hủy khởi động lại." if ok else f"Không có lệnh nào để hủy ({out[:200]})"
-        return self.HELP
+        return Reply(self.HELP, markup=self.reply_keyboard())
 
     def jx_command(self, cmd, arg):
         cfg = self.cfg
@@ -618,6 +696,11 @@ class Watchdog:
             except Exception as e:  # noqa: BLE001
                 return f"❌ Gửi ảnh lỗi: {e}"
             return ""
+        if cmd in ("/jx_gio", "/jx_ngay"):  # đọc lịch sử CSV, không cần đang theo dõi
+            days = 7
+            if cmd == "/jx_ngay" and arg.strip().isdigit():
+                days, arg = max(1, min(90, int(arg))), ""
+            return self.jx_stats("hour" if cmd == "/jx_gio" else "day", arg.strip(), days)
         if not cfg["jxtd"].get("enabled"):
             return "Chưa bật theo dõi jxtdAuto (Cài đặt → jxtdAuto)."
         if cmd == "/jx_homnay":
@@ -626,9 +709,73 @@ class Watchdog:
             return "🎮 Đang khởi động theo dõi jxtdAuto, chờ chút."
         if cmd == "/jx_gon":
             return self.jx.short_text()
+        if cmd == "/jx_nv":
+            names = [r.name for r in self.jx.last_snap.rows]
+            if not names:
+                return "🎮 Không có nhân vật nào trong jxtdAuto."
+            rows = [[{"text": n, "callback_data": cb_data("c", n)} for n in names[i:i + 3]]
+                    for i in range(0, min(len(names), 30), 3)]
+            rows.append([{"text": "📊 Tất cả theo giờ", "callback_data": "jx:h:*"},
+                         {"text": "📈 Tất cả theo ngày", "callback_data": "jx:d:*"}])
+            return Reply("👤 Chọn nhân vật:", markup={"inline_keyboard": rows})
         if cmd == "/jx":
             return self.jx.report_text(arg)
-        return self.HELP
+        return Reply(self.HELP, markup=self.reply_keyboard())
+
+    def jx_stats(self, by, query="", days=7, edit=False):
+        text, names = jxtd.build_stats(self.cfg, JX_HISTORY_DIR, by, query, days=days)
+        return Reply(text, markup=stats_markup(by, names, query, days), html=True, edit=edit)
+
+    def handle_callback(self, data):
+        """Nút inline: jx:c:<tên> xem nhân vật, jx:h|d:<tên|*>[:số ngày] thống kê theo giờ/ngày (sửa tại chỗ)."""
+        parts = data.split(":", 2)
+        if len(parts) != 3 or parts[0] != "jx":
+            return ""
+        op, arg = parts[1], parts[2]
+        if op in ("h", "d"):
+            days = 7
+            if op == "d" and "|" in arg:
+                arg, _, n = arg.rpartition("|")
+                days = int(n) if n.isdigit() else 7
+            return self.jx_stats("hour" if op == "h" else "day", "" if arg == "*" else arg, days, edit=True)
+        if op == "c":
+            if not self.jx or not self.jx.last_snap:
+                return "🎮 Đang khởi động theo dõi jxtdAuto, chờ chút."
+            return Reply(self.jx.report_text(arg), markup={"inline_keyboard": [[
+                {"text": "📊 Theo giờ", "callback_data": cb_data("h", arg)},
+                {"text": "📈 Theo ngày", "callback_data": cb_data("d", arg)}]]})
+        return ""
+
+
+class Reply(str):
+    """Trả lời lệnh Telegram kèm nút bấm (markup), định dạng HTML, hoặc sửa tin cũ (edit) thay vì gửi mới."""
+
+    def __new__(cls, text, markup=None, html=False, edit=False):
+        obj = super().__new__(cls, text)
+        obj.markup, obj.html, obj.edit = markup, html, edit
+        return obj
+
+
+def cb_data(op, name, suffix=""):
+    """callback_data "jx:<op>:<tên><suffix>", cắt bớt tên cho vừa giới hạn 64 byte của Telegram."""
+    while name and len(f"jx:{op}:{name}{suffix}".encode()) > 64:
+        name = name[:-1]
+    return f"jx:{op}:{name}{suffix}"
+
+
+def stats_markup(by, names, query, days=7):
+    """Nút dưới bảng thống kê: đổi giờ/ngày, chọn tất cả hoặc từng nhân vật."""
+    sel = jxtd.match_names(names, query) if query else []
+    q = query or "*"
+    sfx = f"|{days}" if days != 7 else ""
+    rows = [[{"text": ("✅ " if by == "hour" else "") + "📊 Theo giờ", "callback_data": cb_data("h", q)},
+             {"text": ("✅ " if by == "day" else "") + "📈 Theo ngày", "callback_data": cb_data("d", q, sfx)}]]
+    op = "h" if by == "hour" else "d"
+    btns = [{"text": ("✅ " if not query else "") + "👥 Tất cả", "callback_data": f"jx:{op}:*{sfx if op == 'd' else ''}"}]
+    btns += [{"text": ("✅ " if len(sel) == 1 and sel[0] == n else "") + n,
+              "callback_data": cb_data(op, n, sfx if op == "d" else "")} for n in names[:29]]
+    rows += [btns[i:i + 3] for i in range(0, len(btns), 3)]
+    return {"inline_keyboard": rows}
 
 
 # ---------------------------------------------------------------- main

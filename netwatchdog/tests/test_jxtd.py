@@ -260,5 +260,93 @@ class CommandTest(unittest.TestCase):
         self.assertIn("Chưa bật", wd.handle_command("/jx_homnay"))
 
 
+class StatsTest(unittest.TestCase):
+    def setUp(self):
+        from datetime import datetime
+        self.tmp = tempfile.mkdtemp()
+        self.hist = os.path.join(self.tmp, "h")
+        self.cfg = nw.deep_merge(nw.DEFAULT_CONFIG, {"machine_name": "PC1"})
+        self.day = datetime(2026, 10, 3, 8, 58)
+        # A: 1.8m/h, tiền 100 -> 101 -> 102 ... vạn; B: 0.9m/h, tiền không đổi; có 1 lần không thấy jxtdAuto
+        for i in range(5):
+            a, b = row("[0]A"), row("[1]B")
+            a.money, a.level = f"{100 + i}.0 vạn", f"Lv109 ({39.0 + i:.1f}%)"
+            b.exp, b.money = "900k/h", "50.0 vạn"
+            s = jxtd.Snapshot(ts=self.day.timestamp() + i * 60, found=i != 2, rows=[a, b] if i != 2 else [])
+            jxtd.write_history(s, self.hist, 90)
+
+    def test_parse_units(self):
+        self.assertEqual(jxtd.parse_exp_rate("1.8m/h"), 1.8e6)
+        self.assertEqual(jxtd.parse_exp_rate("950k/h"), 950e3)
+        self.assertIsNone(jxtd.parse_exp_rate("?"))
+        self.assertEqual(jxtd.parse_van("225.0 vạn"), 225.0)
+        self.assertAlmostEqual(jxtd.parse_van("-4214 lượng"), -0.4214)
+        self.assertEqual(jxtd.fmt_exp(1.8e6), "1.8m")
+        self.assertEqual(jxtd.fmt_van(-0.04), "0.0")
+
+    def test_compute_by_hour(self):
+        recs = jxtd.load_history(self.hist, self.day.date(), self.day.date())
+        self.assertEqual(len(recs), 8)
+        s = jxtd.compute_stats(recs, by="hour")
+        self.assertEqual([k.hour for k, _ in s["buckets"]], [8, 9])
+        a = s["chars"]["[0]A"]
+        # các khoảng 1 phút (08:58→59, 09:01→02) và 2 phút (08:59→09:01) đều dưới ngưỡng gián đoạn
+        self.assertAlmostEqual(a["exp"], 1.8e6 * 4 / 60)
+        self.assertAlmostEqual(a["van"], 4.0)
+        self.assertAlmostEqual(s["chars"]["[1]B"]["van"], 0.0)
+        self.assertAlmostEqual(s["buckets"][0][1]["van"], 1.0)  # 08:58 → 08:59
+        self.assertAlmostEqual(s["total_exp"], (1.8e6 + 0.9e6) * 4 / 60)
+        self.assertEqual(s["active_hours"], 2)
+        only_b = jxtd.compute_stats(recs, names=["[1]B"], by="hour")
+        self.assertEqual(list(only_b["chars"]), ["[1]B"])
+
+    def test_compute_by_day_fills_range(self):
+        start, end = jxtd.stats_range("day", self.day.date(), 3)
+        s = jxtd.compute_stats(jxtd.load_history(self.hist, start, end), by="day", start=start, end=end)
+        self.assertEqual([k.day for k, _ in s["buckets"]], [1, 2, 3])
+        self.assertEqual(s["buckets"][0][1]["chars"], set())
+
+    def test_match_names_exact_and_multi(self):
+        names = ["[1]A", "[1]AB", "[2]VụtĐêm"]
+        self.assertEqual(jxtd.match_names(names, "[1]A"), ["[1]A"])
+        self.assertEqual(jxtd.match_names(names, "1]a, vut"), ["[1]A", "[1]AB", "[2]VụtĐêm"])
+        self.assertEqual(jxtd.match_names(names, ""), names)
+
+    def test_build_stats_text(self):
+        t, names = jxtd.build_stats(self.cfg, self.hist, "hour", day=self.day.date())
+        self.assertEqual(names, ["[0]A", "[1]B"])
+        self.assertIn("theo giờ · 03/10 [PC1]", t)
+        self.assertIn("Tất cả (2 nhân vật)", t)
+        self.assertIn("<pre>", t)
+        self.assertIn("[0]A: 120k EXP · +4.0 vạn · Lv109 +4.0%", t)
+        t, _ = jxtd.build_stats(self.cfg, self.hist, "hour", "b", day=self.day.date())
+        self.assertIn("👤 [1]B", t)
+        self.assertIn("NL hiện tại: 50.0 vạn", t)
+        t, _ = jxtd.build_stats(self.cfg, self.hist, "day", "zzz", day=self.day.date())
+        self.assertIn("Không thấy nhân vật", t)
+
+    def test_telegram_buttons_and_callbacks(self):
+        cfg_path = os.path.join(self.tmp, "cfg.json")
+        nw.save_json(cfg_path, self.cfg)
+        wd = nw.Watchdog(cfg_path, os.path.join(self.tmp, "s.json"))
+        kb = wd.reply_keyboard()["keyboard"]
+        self.assertEqual(len(kb), 3)
+        for row_ in kb:
+            for b in row_:
+                self.assertIn(b["text"], wd.BUTTONS)
+        help_ = wd.handle_command("❓ Trợ giúp")
+        self.assertIn("/jx_gio", help_)
+        self.assertIn("keyboard", help_.markup)
+        r = wd.handle_command("📊 Theo giờ")  # nút bấm = lệnh /jx_gio
+        self.assertTrue(r.html)
+        texts = [b["text"] for row_ in r.markup["inline_keyboard"] for b in row_]
+        self.assertIn("✅ 👥 Tất cả", texts)
+        r = wd.handle_callback("jx:d:[1]B")
+        self.assertTrue(r.edit)
+        self.assertIn("theo ngày", r)
+        self.assertEqual(wd.handle_callback("other"), "")
+        self.assertLessEqual(len(nw.cb_data("h", "Đ" * 40).encode()), 64)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -43,7 +43,13 @@ NetWatchdog chạy khi bạn **đăng nhập**, nên máy phải **tự đăng n
 
 ## Lệnh Telegram
 
-Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình:
+Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình. Gửi `/start` hoặc `/menu` để hiện **bàn phím nút bấm** dưới khung chat, bấm thay cho gõ lệnh (`/an_nut` để ẩn). Menu `/` của bot cũng liệt kê sẵn các lệnh.
+
+```
+🎮 Bảng JX     📋 JX gọn      📸 Ảnh JX
+📊 Theo giờ    📈 Theo ngày   📅 Hôm nay
+👤 Nhân vật    🖥 Tình trạng  ❓ Trợ giúp
+```
 
 | Lệnh | Tác dụng |
 |---|---|
@@ -55,6 +61,9 @@ Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình:
 | `/jx` | Bảng nhân vật jxtdAuto lúc này (khi đã bật theo dõi). `/jx vut`: chỉ nhân vật có tên chứa "vut", không cần gõ dấu |
 | `/jx_gon` | jxtdAuto rút gọn, mỗi nhân vật một dòng: tick · tác vụ · EXP/giờ · thu nhập |
 | `/jx_homnay` | Tổng kết jxtdAuto trong ngày: EXP/cấp tăng, thu nhập và ngân lượng đầu ngày → hiện tại, số lần chết, số lần đổi tác vụ, thời gian không thấy jxtdAuto |
+| `/jx_gio` | EXP và tiền vạn kiếm được **theo giờ** hôm nay. Bên dưới có nút chọn **tất cả** hoặc **từng nhân vật** và nút chuyển sang theo ngày (bấm là sửa ngay tin đó). Gõ `/jx_gio vut, buff` để gộp nhiều nhân vật |
+| `/jx_ngay` | EXP và tiền vạn **theo ngày**, 7 ngày gần nhất (`/jx_ngay 30`: 30 ngày), có nút chọn nhân vật như trên |
+| `/jx_nv` | Danh sách nhân vật dạng nút bấm: bấm tên để xem chi tiết, kèm nút xem theo giờ / theo ngày của riêng nhân vật đó |
 | `/jx_anh` | Ảnh chụp cửa sổ jxtdAuto (chụp thụ động, cửa sổ bị che vẫn chụp được, chỉ không chụp được khi đang thu nhỏ). Xem được cả phần "THÔNG TIN NHIỆM VỤ" của nhân vật đang chọn |
 
 ## Theo dõi jxtdAuto
@@ -62,10 +71,13 @@ Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình:
 Bật ở trang **jxtdAuto** trong cửa sổ Cài đặt (mặc định tắt). NetWatchdog **chỉ đọc** bảng nhân vật trong cửa sổ jxtdAuto qua lớp trợ năng của Windows (UI Automation): không bấm, không gõ, không đổi cài đặt, không đọc/ghi bộ nhớ của jxtdAuto hay game.
 
 - Mỗi 60 giây đọc đủ các cột: tác vụ, EXP/giờ, thu nhập, ngân lượng, cấp/EXP, phù/chết, thẻ tháng, ô tick. Lịch sử lưu ở `jxtd_history\YYYY-MM-DD.csv` trong thư mục dữ liệu (giữ 90 ngày, mở được bằng Excel).
-- Báo cáo định kỳ (mặc định 60 phút), một lần khi khởi động, và theo lệnh `/jx`, `/jx_gon`, `/jx_homnay`, `/jx_anh` (xem [Lệnh Telegram](#lệnh-telegram)).
+- Báo cáo định kỳ (mặc định 60 phút), một lần khi khởi động, và theo lệnh `/jx`, `/jx_gon`, `/jx_homnay`, `/jx_gio`, `/jx_ngay`, `/jx_nv`, `/jx_anh` (xem [Lệnh Telegram](#lệnh-telegram)).
 - Cảnh báo ngay khi: jxtdAuto bị tắt / không thấy cửa sổ (nhắc lại mỗi 30 phút); nhân vật biến khỏi danh sách hoặc bị bỏ tick; thu nhập chuyển sang âm; tác vụ thay đổi (kể cả đứng im, tin kèm đầy đủ thông tin nhân vật; bộ đếm tiến độ như "(55 / 100)" tăng thì không tính là đổi); số lần chết tăng; thẻ tháng còn ≤ 24 giờ và khi hết hẳn; license jxtdAuto còn ≤ 7 ngày.
 - Mỗi loại cảnh báo của một nhân vật gửi tối đa 1 lần / 30 phút. Hết lỗi thì gửi tin "🟢 … trở lại".
 - Không đọc được phần "THÔNG TIN NHIỆM VỤ": jxtdAuto vẽ thẳng lên tab và chỉ hiện nhân vật đang chọn.
+- **Thống kê** (trang **Thống kê jxtdAuto** trong cửa sổ Cài đặt, hoặc `/jx_gio`, `/jx_ngay`): EXP và tiền vạn kiếm được theo từng giờ trong một ngày, hoặc theo từng ngày (7 / 14 / 30 ngày). Chọn tất cả, một hoặc vài nhân vật. Có ô tổng và trung bình mỗi giờ, biểu đồ cột (di chuột để xem số), bảng chi tiết theo thời gian và theo nhân vật (cấp đầu → cuối, số giờ chạy, ngân lượng hiện tại). Tính từ lịch sử CSV ở trên:
+  - EXP là **ước tính**: EXP/giờ × thời gian giữa hai lần đọc; bỏ qua những lúc jxtdAuto gián đoạn.
+  - Tiền = chênh lệch cột Ngân lượng (quy ra vạn, 1 vạn = 10.000 lượng). Tiêu hay chuyển tiền đi cũng bị trừ vào.
 - Kiểm tra nhanh: nút **Đọc ngay** ở trang jxtdAuto, hoặc `python netwatchdog.py --jxtd` (ghi kết quả vào log).
 
 ## Cơ chế an toàn
