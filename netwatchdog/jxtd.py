@@ -41,7 +41,13 @@ DEFAULT_CONFIG = {
     "char_missing": True,
     "unticked": True,
     "negative_income": True,
-    "task_change": True,
+    "stuck": True,                 # nhân vật đứng chơi / gặp lỗi (thay cho cảnh báo "đổi tác vụ" cũ)
+    "stuck_confirm_reads": 3,      # Lỗi/Nghỉ: báo sau số lần đọc liên tiếp này (lỗi đăng nhập 1-2 phút tự hết thì bỏ qua)
+    "idle_min": 5,                 # trạng thái không làm gì khác: báo khi kéo dài quá số phút này
+    "remind_stuck": True,
+    "danger_keywords": ["Lỗi", "Nghỉ", "Đầy hành trang"],
+    "idle_exact": ["", "-", "Không", "Hoàn thành"],
+    "idle_keywords": ["Treo", "Mất kết nối", "Đang vào game", "Đăng nhập"],
     "death": True,
     "month_card": True,
     "month_card_warn_hours": 24,
@@ -149,6 +155,22 @@ def task_key(task):
     return TASK_PROGRESS_RE.sub("", task or "")
 
 
+def task_status(task, J):
+    """"danger" (jxtdAuto báo Lỗi/Nghỉ...), "idle" (không làm gì: "-", <Mất kết nối>...) hoặc "ok".
+    Tác vụ lạ coi là "ok": đổi nhiệm vụ là chuyện bình thường, chỉ báo khi nhân vật đứng chơi."""
+    def fold(x):  # giữ dấu ("Lỗi" khác "lợi"), chỉ bỏ phân biệt hoa/thường
+        return unicodedata.normalize("NFC", x or "").casefold().strip()
+
+    def has(keys, text):  # khớp nguyên từ
+        return any(re.search(r"(?<!\w)" + re.escape(fold(k)) + r"(?!\w)", text) for k in keys if k)
+    t = fold(fold(task).strip("<>"))
+    if has(J["danger_keywords"], t):
+        return "danger"
+    if t in [fold(k) for k in J["idle_exact"]] or has(J["idle_keywords"], t):
+        return "idle"
+    return "ok"
+
+
 def make_row(name, desc, state, headers):
     r = Row(name=name.strip(), checked=bool(state & STATE_SYSTEM_CHECKED),
             selected=bool(state & STATE_SYSTEM_SELECTED))
@@ -252,13 +274,31 @@ def read(J):
 
 
 # ---------------------------------------------------------------- Định dạng tin nhắn
+# Các cột thêm (jxtdAuto cho bật/tắt): (tên cột, nhãn trong tin nhắn, tên cột CSV), gom theo dòng hiển thị
+EXTRA_COLUMNS = [
+    [("Ô trống", "🎒 Ô trống", "o_trong"), ("Vé MT", "🎟 Vé MT", "ve_mt")],
+    [("Nhiệm vụ MT", "📜 NV MT", "nv_mt"), ("N. động", "⚡ N.động", "nang_dong")],
+    [("Xu/Kim đỉnh", "🪙 Xu/Kim đỉnh", "xu_kim_dinh")],
+    [("Hạn phù", "📿 Hạn phù", "han_phu")],
+]
+EXTRA_KNOWN = [c for line in EXTRA_COLUMNS for c in line]
+
+
 def fmt_row(r):
     mark = "✅" if r.checked else "⬜"
-    return (f"{mark} {r.name}\n"
-            f"   {r.task or '?'} · {r.exp or '?'}\n"
-            f"   💰 {r.income or '?'} · NL {r.money or '?'}\n"
-            f"   📈 {r.level or '?'} · Phù/chết {r.deaths or '?'}" +
-            (f"\n   🎫 Thẻ tháng {r.card}" if r.card else ""))
+    lines = [f"{mark} {r.name}",
+             f"   {r.task or '?'} · {r.exp or '?'}",
+             f"   💰 {r.income or '?'} · NL {r.money or '?'}",
+             f"   📈 {r.level or '?'} · Phù/chết {r.deaths or '?'}"]
+    if r.card:
+        lines.append(f"   🎫 Thẻ tháng {r.card}")
+    for group in EXTRA_COLUMNS:
+        parts = [f"{label} {r.extra[col]}" for col, label, _ in group if r.extra.get(col)]
+        if parts:
+            lines.append("   " + " · ".join(parts))
+    known = {col for col, _, _ in EXTRA_KNOWN}
+    lines += [f"   • {col}: {val}" for col, val in r.extra.items() if col not in known and val]  # cột chưa biết
+    return "\n".join(lines)
 
 
 def header_line(cfg, icon, text):
@@ -657,7 +697,8 @@ def capture_png(J):
 
 # ---------------------------------------------------------------- Lịch sử CSV
 CSV_FIELDS = ["thoi_gian", "nhan_vat", "tick", "dang_chon", "tac_vu", "exp_gio", "thu_nhap",
-              "ngan_luong", "cap_exp", "phu_chet", "the_thang", "ghi_chu"]
+              "ngan_luong", "cap_exp", "phu_chet", "the_thang", "ghi_chu"] + [c for _, _, c in EXTRA_KNOWN]
+NOTE_COL = CSV_FIELDS.index("ghi_chu")
 
 
 def write_history(snap, folder, keep_days):
@@ -671,11 +712,12 @@ def write_history(snap, folder, keep_days):
         if new:
             w.writerow(CSV_FIELDS)
         if not snap.found:
-            w.writerow([t] + [""] * (len(CSV_FIELDS) - 2) +
-                       ["không thấy jxtdAuto" + (f" ({snap.error})" if snap.error else "")])
+            line = [t] + [""] * (len(CSV_FIELDS) - 1)
+            line[NOTE_COL] = "không thấy jxtdAuto" + (f" ({snap.error})" if snap.error else "")
+            w.writerow(line)
         for r in snap.rows:
             w.writerow([t, r.name, int(r.checked), int(r.selected), r.task, r.exp, r.income,
-                        r.money, r.level, r.deaths, r.card, ""])
+                        r.money, r.level, r.deaths, r.card, ""] + [r.extra.get(col, "") for col, _, _ in EXTRA_KNOWN])
     if new:  # sang ngày mới thì xóa file quá hạn
         cutoff = (day - timedelta(days=keep_days)).strftime("%Y-%m-%d")
         for fn in os.listdir(folder):
@@ -720,7 +762,7 @@ class Alerts:
             a.update(active=False, sent=False)
 
     def event(self, key, cooldown, now=None):
-        """Sự kiện một lần (đổi tác vụ, chết): True nếu được phép gửi lúc này."""
+        """Sự kiện một lần (nhân vật chết): True nếu được phép gửi lúc này."""
         now = now or time.time()
         a = self.st.setdefault(key, {"active": False, "since": 0, "sent": False, "last_sent": 0})
         if now - a["last_sent"] >= cooldown:
@@ -838,11 +880,8 @@ class JxMonitor:
                     lambda r=r: header_line(cfg, "📉", f"{r.name} thu nhập âm: {r.income}") + "\n\n" + fmt_row(r),
                     lambda d, r=r: header_line(cfg, "🟢", f"{r.name} thu nhập hết âm: {r.income}"),
                     cd, now=now)
-            if J["task_change"] and task_key(r.task) != task_key(c.get("task")) and alerts.event(
-                    f"task:{r.name}", cd, now):
-                alerts.send(header_line(cfg, "🔄", f"{r.name} đổi tác vụ") +
-                            f"\n{c.get('task') or '?'} → {r.task or '?'}\n\n" + fmt_row(r))
-                c["task"] = r.task
+            if J["stuck"]:
+                self._check_stuck(cfg, alerts, c, r, now, cd)
             dc = r.death_count
             if dc is not None:
                 old = c.get("deaths")
@@ -874,6 +913,34 @@ class JxMonitor:
                               lambda n=name: header_line(cfg, "❓", f"{n} biến khỏi danh sách nhân vật"),
                               "", cd, now=now)
         return missing
+
+    def _check_stuck(self, cfg, alerts, c, r, now, cd):
+        """Nhân vật đứng chơi: jxtdAuto báo Lỗi/Nghỉ (vd. đầy hành trang, về thành liên tục) qua vài lần đọc,
+        hoặc không làm gì ("-", <Mất kết nối>, Treo...) quá `idle_min` phút. Đổi nhiệm vụ thì không báo."""
+        J = cfg["jxtd"]
+        status = task_status(r.task, J) if r.checked else "ok"  # bỏ tick đã có cảnh báo riêng
+        since = c.get("stuck_since", now)  # lúc bắt đầu kẹt (trước khi cảnh báo được gửi)
+        if status == "ok":
+            c.pop("stuck_since", None)
+            c["stuck_reads"] = 0
+        else:
+            c["stuck_since"] = since
+            c["stuck_reads"] = c.get("stuck_reads", 0) + 1
+        dur = now - since
+        key = f"stuck:{r.name}"
+        # đã báo kẹt thì giữ đến khi làm việc lại (vd. "Nghỉ" chuyển sang <Mất kết nối> vẫn là đang kẹt)
+        active = status != "ok" and (
+            alerts.st.get(key, {}).get("active", False)
+            or (status == "danger" and c["stuck_reads"] >= J["stuck_confirm_reads"]) or dur >= J["idle_min"] * 60)
+        alerts.update(
+            key, active,
+            lambda: header_line(cfg, "🚨" if status == "danger" else "⚠️",
+                                f"{r.name} đang đứng chơi ({fmt_duration(dur)})") + f"\n{r.task or '(không có tác vụ)'}"
+            + "\n\n" + fmt_row(r),
+            # bị bỏ tick thì không phải "hoạt động lại": để cảnh báo bỏ tick lo, không gửi tin 🟢
+            (lambda d: header_line(cfg, "🟢", f"{r.name} hoạt động lại: {r.task} (đứng chơi {fmt_duration(dur)})"))
+            if r.checked else "",
+            cd, remind=J["remind_stuck"], now=now)
 
     def _check_card(self, cfg, alerts, r, now, cd):
         """Thẻ tháng: "sắp hết" khi còn <= ngưỡng giờ, thêm "đã hết" khi về 0, "đã gia hạn" khi tăng lại."""

@@ -124,24 +124,75 @@ class MonitorTest(unittest.TestCase):
         self.reader.rows[0] = row("[0]A", income="2.0 vạn")
         self.assertIn("hết âm", self.tick()[0])
 
-    def test_task_change_includes_full_info_and_batches(self):
-        self.tick()
-        self.reader.rows[0] = row("[0]A", task="Đứng im")
-        m = self.tick()[0]
-        self.assertIn("Luyện công → Đứng im", m)
-        self.assertIn("Phù/chết", m)
-        self.assertIn("Thẻ tháng", m)
-        self.reader.rows[0] = row("[0]A", task="Về thành")
-        self.assertEqual(self.tick(), [])              # trong thời gian chờ
-        self.assertIn("Đứng im → Về thành", self.tick(30)[0])
+    def test_task_status(self):
+        J = self.cfg["jxtd"]
+        for task, want in (("Luyện công", "ok"), ("NV Mặc Thạch (55 / 100)", "ok"), ("Chờ vào trận đấu", "ok"),
+                           ("4147 / 655", "ok"), ("Phúc lợi", "ok"), ("NV Nghĩa quân", "ok"),
+                           ("Lỗi: Kiểm tra đầy hành trang", "danger"),
+                           ("Nghỉ <15 phút> do về thành liên tục <5 lần> trong <10 phút>", "danger"),
+                           ("<Mất kết nối>", "idle"), ("-", "idle"), ("", "idle"), ("Treo 47(s)", "idle"),
+                           ("<Đăng nhập (13)>", "idle"), ("Hoàn thành", "idle")):
+            self.assertEqual(jxtd.task_status(task, J), want, task)
 
-    def test_task_progress_counter_is_not_a_change(self):
-        self.reader.rows[0] = row("[0]A", task="NV Mặc Thạch (55 / 100)")
+    def test_changing_task_is_silent(self):
         self.tick()
-        self.reader.rows[0] = row("[0]A", task="NV Mặc Thạch (56 / 100)")
-        self.assertEqual(self.tick(40), [])
+        for task in ("NV Mặc Thạch (55 / 100)", "NV Mặc Thạch (56 / 100)", "Phong Lăng Độ", "Luyện công"):
+            self.reader.rows[0] = row("[0]A", task=task)
+            self.assertEqual(self.tick(40), [])
+
+    def test_danger_task_alerts_after_confirm_then_recovers(self):
+        self.tick()
+        self.reader.rows[0] = row("[0]A", task="Lỗi: Kiểm tra đầy hành trang")
+        self.assertEqual(self.tick(), [])              # lần 1, 2: chờ xác nhận
+        self.assertEqual(self.tick(), [])
+        m = self.tick()[0]
+        self.assertIn("🚨 [0]A đang đứng chơi", m)
+        self.assertIn("Lỗi: Kiểm tra đầy hành trang", m)
+        self.assertIn("Thẻ tháng", m)                  # kèm đầy đủ thông tin nhân vật
+        self.assertEqual(self.tick(10), [])
+        self.assertIn("Vẫn còn", self.tick(25)[0])     # nhắc lại sau 30 phút
+        self.reader.rows[0] = row("[0]A", task="<Mất kết nối>")
+        self.assertEqual(self.tick(), [])              # vẫn kẹt, chưa phải hoạt động lại
         self.reader.rows[0] = row("[0]A", task="Luyện công")
-        self.assertIn("NV Mặc Thạch (55 / 100) → Luyện công", self.tick()[0])
+        self.assertIn("🟢 [0]A hoạt động lại: Luyện công", self.tick()[0])
+
+    def test_transient_error_is_ignored(self):
+        self.tick()
+        self.reader.rows[0] = row("[0]A", task="Lỗi: Hết thời gian đăng nhập")
+        self.assertEqual(self.tick(), [])
+        self.reader.rows[0] = row("[0]A")
+        self.assertEqual(self.tick(), [])
+
+    def test_idle_alerts_only_after_idle_min(self):
+        self.tick()
+        self.reader.rows[0] = row("[0]A", task="<Mất kết nối>")
+        for _ in range(5):                             # 0..4 phút: im lặng
+            self.assertEqual(self.tick(), [])
+        self.assertIn("⚠️ [0]A đang đứng chơi (5 phút)", self.tick()[0])
+        self.reader.rows[0] = row("[0]A", task="-", checked=False)   # bỏ tick: cảnh báo riêng lo
+        msgs = self.tick()
+        self.assertTrue(any("bỏ tick" in m for m in msgs))
+
+    def test_extra_columns_shown(self):
+        headers = HEADERS + ["N. động", "Xu/Kim đỉnh", "Ô trống", "Vé MT", "Hạn phù", "Nhiệm vụ MT", "Cột lạ"]
+        desc = ("Tác vụ: Luyện công, EXP/giờ: 1.5m/h, Thu nhập: 13.3 vạn, Ngân lượng: 427.4 vạn, "
+                "Cấp/EXP: Lv109 (57.1%), Phù/chết: 14 / 0, Thẻ tháng: 238h / 238h, N. động: 35, "
+                "Xu/Kim đỉnh: 58 / 3010, Ô trống: 33 / 27, Vé MT: 17, Hạn phù: - / 8d / -, Nhiệm vụ MT: 4 / 100, Cột lạ: x")
+        r = jxtd.make_row("[0]A", desc, 0x10, headers)
+        t = jxtd.fmt_row(r)
+        self.assertIn("🎒 Ô trống 33 / 27 · 🎟 Vé MT 17", t)
+        self.assertIn("📜 NV MT 4 / 100 · ⚡ N.động 35", t)
+        self.assertIn("📿 Hạn phù - / 8d / -", t)
+        self.assertIn("• Cột lạ: x", t)
+        self.assertNotIn("Ô trống", jxtd.fmt_row(row("[0]B")))   # không có cột thì không hiện
+        folder = os.path.join(self.tmp, "hx")
+        jxtd.write_history(jxtd.Snapshot(ts=self.t, found=True, rows=[r]), folder, 90)
+        jxtd.write_history(jxtd.Snapshot(ts=self.t + 60, found=False), folder, 90)
+        import csv
+        with open(os.path.join(folder, os.listdir(folder)[0]), encoding="utf-8-sig", newline="") as f:
+            data = list(csv.DictReader(f))
+        self.assertEqual((data[0]["o_trong"], data[0]["han_phu"], data[0]["ghi_chu"]), ("33 / 27", "- / 8d / -", ""))
+        self.assertEqual(data[1]["ghi_chu"], "không thấy jxtdAuto")
 
     def test_death_increase(self):
         self.tick()
