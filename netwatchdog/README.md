@@ -58,7 +58,7 @@ Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình. Gửi `/start` ho�
 | `/fix` | Chạy quy trình khôi phục mạng ngay |
 | `/reboot yes` | Khởi động lại máy sau 30 giây |
 | `/cancel` | Hủy lệnh khởi động lại đang chờ |
-| `/jx` | Bảng nhân vật jxtdAuto lúc này (khi đã bật theo dõi). `/jx vut`: chỉ nhân vật có tên chứa "vut", không cần gõ dấu |
+| `/jx` | Bảng nhân vật jxtdAuto lúc này (khi đã bật theo dõi). `/jx vut`: chỉ nhân vật có tên chứa "vut", không cần gõ dấu. Hiện cả các cột bật thêm trong jxtdAuto: ô trống, vé MT, nhiệm vụ MT, năng động, xu/kim đỉnh, hạn phù |
 | `/jx_gon` | jxtdAuto rút gọn, mỗi nhân vật một dòng: tick · tác vụ · EXP/giờ · thu nhập |
 | `/jx_homnay` | Tổng kết jxtdAuto trong ngày: EXP/cấp tăng, thu nhập và ngân lượng đầu ngày → hiện tại, số lần chết, số lần đổi tác vụ, thời gian không thấy jxtdAuto |
 | `/jx_gio` | EXP và tiền vạn kiếm được **theo giờ** hôm nay. Bên dưới có nút chọn **tất cả** hoặc **từng nhân vật** và nút chuyển sang theo ngày (bấm là sửa ngay tin đó). Gõ `/jx_gio vut, buff` để gộp nhiều nhân vật |
@@ -70,9 +70,10 @@ Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình. Gửi `/start` ho�
 
 Bật ở trang **jxtdAuto** trong cửa sổ Cài đặt (mặc định tắt). NetWatchdog **chỉ đọc** bảng nhân vật trong cửa sổ jxtdAuto qua lớp trợ năng của Windows (UI Automation): không bấm, không gõ, không đổi cài đặt, không đọc/ghi bộ nhớ của jxtdAuto hay game.
 
-- Mỗi 60 giây đọc đủ các cột: tác vụ, EXP/giờ, thu nhập, ngân lượng, cấp/EXP, phù/chết, thẻ tháng, ô tick. Lịch sử lưu ở `jxtd_history\YYYY-MM-DD.csv` trong thư mục dữ liệu (giữ 90 ngày, mở được bằng Excel).
+- Mỗi 60 giây đọc đủ các cột: tác vụ, EXP/giờ, thu nhập, ngân lượng, cấp/EXP, phù/chết, thẻ tháng, ô tick, cùng các cột bật thêm trong jxtdAuto (ô trống, vé MT, nhiệm vụ MT, năng động, xu/kim đỉnh, hạn phù). Lịch sử lưu ở `jxtd_history\YYYY-MM-DD.csv` trong thư mục dữ liệu (giữ 90 ngày, mở được bằng Excel).
 - Báo cáo định kỳ (mặc định 60 phút), một lần khi khởi động, và theo lệnh `/jx`, `/jx_gon`, `/jx_homnay`, `/jx_gio`, `/jx_ngay`, `/jx_nv`, `/jx_anh` (xem [Lệnh Telegram](#lệnh-telegram)).
-- Cảnh báo ngay khi: jxtdAuto bị tắt / không thấy cửa sổ (nhắc lại mỗi 30 phút); nhân vật biến khỏi danh sách hoặc bị bỏ tick; thu nhập chuyển sang âm; tác vụ thay đổi (kể cả đứng im, tin kèm đầy đủ thông tin nhân vật; bộ đếm tiến độ như "(55 / 100)" tăng thì không tính là đổi); số lần chết tăng; thẻ tháng còn ≤ 24 giờ và khi hết hẳn; license jxtdAuto còn ≤ 7 ngày.
+- Cảnh báo ngay khi: jxtdAuto bị tắt / không thấy cửa sổ (nhắc lại mỗi 30 phút); nhân vật biến khỏi danh sách hoặc bị bỏ tick; thu nhập chuyển sang âm; **nhân vật đứng chơi** (xem dưới); số lần chết tăng; thẻ tháng còn ≤ 24 giờ và khi hết hẳn; license jxtdAuto còn ≤ 7 ngày.
+- **Nhân vật đứng chơi**: chỉ báo khi nhân vật không làm gì, còn đổi nhiệm vụ là bình thường nên không báo. Báo khi cột Tác vụ hiện `Lỗi: …` (vd. "Kiểm tra đầy hành trang") hoặc `Nghỉ … do về thành liên tục` qua 3 lần đọc liên tiếp (lỗi đăng nhập 1–2 phút tự hết thì bỏ qua), hoặc khi nhân vật không có tác vụ / `<Mất kết nối>` / `Treo` / đang đăng nhập kéo dài quá 5 phút. Nhắc lại mỗi 30 phút khi vẫn kẹt, và gửi "🟢 … hoạt động lại" khi làm việc lại. Danh sách từ khóa chỉnh được trong `config.json` (`danger_keywords`, `idle_exact`, `idle_keywords`).
 - Mỗi loại cảnh báo của một nhân vật gửi tối đa 1 lần / 30 phút. Hết lỗi thì gửi tin "🟢 … trở lại".
 - Không đọc được phần "THÔNG TIN NHIỆM VỤ": jxtdAuto vẽ thẳng lên tab và chỉ hiện nhân vật đang chọn.
 - **Thống kê** (trang **Thống kê jxtdAuto** trong cửa sổ Cài đặt, hoặc `/jx_gio`, `/jx_ngay`): EXP và tiền vạn kiếm được theo từng giờ trong một ngày, hoặc theo từng ngày (7 / 14 / 30 ngày). Chọn tất cả, một hoặc vài nhân vật. Có ô tổng và trung bình mỗi giờ, biểu đồ cột (di chuột để xem số), bảng chi tiết theo thời gian và theo nhân vật (cấp đầu → cuối, số giờ chạy, ngân lượng hiện tại). Tính từ lịch sử CSV ở trên:

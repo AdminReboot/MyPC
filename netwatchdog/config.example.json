@@ -50,7 +50,27 @@
     "char_missing": true,
     "unticked": true,
     "negative_income": true,
-    "task_change": true,
+    "stuck": true,
+    "stuck_confirm_reads": 3,
+    "idle_min": 5,
+    "remind_stuck": true,
+    "danger_keywords": [
+      "Lỗi",
+      "Nghỉ",
+      "Đầy hành trang"
+    ],
+    "idle_exact": [
+      "",
+      "-",
+      "Không",
+      "Hoàn thành"
+    ],
+    "idle_keywords": [
+      "Treo",
+      "Mất kết nối",
+      "Đang vào game",
+      "Đăng nhập"
+    ],
     "death": true,
     "month_card": true,
     "month_card_warn_hours": 24,

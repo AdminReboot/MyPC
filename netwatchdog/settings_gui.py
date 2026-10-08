@@ -900,8 +900,11 @@ class SettingsApp(tk.Tk):
         self.toggle(card, "Nhân vật biến khỏi danh sách", None, "jx_missing", J.get("char_missing", True))
         self.toggle(card, "Nhân vật bị bỏ tick", None, "jx_untick", J.get("unticked", True))
         self.toggle(card, "Thu nhập chuyển sang âm", None, "jx_neg", J.get("negative_income", True))
-        self.toggle(card, "Tác vụ thay đổi", "Gồm cả lúc đứng im; tin kèm đầy đủ thông tin nhân vật.", "jx_task",
-                    J.get("task_change", True))
+        self.toggle(card, "Nhân vật đứng chơi / gặp lỗi",
+                    "jxtdAuto báo Lỗi (đầy hành trang…) hoặc Nghỉ do về thành liên tục. Đổi nhiệm vụ thì không báo.",
+                    "jx_stuck", J.get("stuck", True))
+        self.number(card, "Không làm gì quá", "Mất kết nối, Treo, không có tác vụ… kéo dài quá mức này mới báo.",
+                    "jx_idle", J.get("idle_min", 5), "phút")
         self.toggle(card, "Nhân vật chết", "Số sau dấu “/” ở cột Phù/chết tăng.", "jx_death", J.get("death", True))
         self.toggle(card, "Thẻ tháng sắp hết / đã hết", None, "jx_card", J.get("month_card", True))
         self.number(card, "Ngưỡng thẻ tháng", "Báo “sắp hết” khi số giờ còn lại ≤ ngưỡng này.", "jx_card_h",
@@ -1546,7 +1549,8 @@ class SettingsApp(tk.Tk):
             char_missing=self.vars["jx_missing"].get(),
             unticked=self.vars["jx_untick"].get(),
             negative_income=self.vars["jx_neg"].get(),
-            task_change=self.vars["jx_task"].get(),
+            stuck=self.vars["jx_stuck"].get(),
+            idle_min=max(1, self._int("jx_idle", 5)),
             death=self.vars["jx_death"].get(),
             month_card=self.vars["jx_card"].get(),
             month_card_warn_hours=self._int("jx_card_h", 24),
