@@ -112,10 +112,30 @@ class MonitorTest(unittest.TestCase):
     def test_char_missing_and_back(self):
         self.tick()
         gone = self.reader.rows.pop(1)
-        self.assertIn("[1]B biến khỏi", self.tick()[0])
+        self.assertIn("❓ B biến khỏi", self.tick()[0])
         self.assertEqual(self.tick(), [])
         self.reader.rows.append(gone)
         self.assertIn("[1]B đã trở lại", self.tick()[0])
+
+    def test_group_number_change_is_not_missing(self):
+        self.tick()
+        self.reader.rows[1] = row("[0]B")              # [1]B -> [0]B
+        self.assertEqual(self.tick(), [])
+        self.reader.rows[1] = row("[1]B")
+        self.assertEqual(self.tick(), [])
+        self.assertEqual(sorted(self.state.get("jxtd")["chars"]), ["A", "B"])
+
+    def test_old_state_keys_are_migrated(self):
+        st = self.state.data.setdefault("jxtd", {})
+        st["chars"] = {"[1]B": {"task": "Luyện công", "deaths": 0, "last_seen": self.t},
+                       "[0]B": {"task": "Luyện công", "deaths": 0, "last_seen": self.t - 3600}}
+        st["alerts"] = {"missing:[0]B": {"active": True, "since": self.t - 3600, "sent": True, "last_sent": self.t - 3600},
+                        "income:[1]B": {"active": True, "since": self.t, "sent": True, "last_sent": self.t}}
+        self.reader.rows[1] = row("[1]B", income="-5 vạn")
+        self.assertEqual(self.tick(), [])              # không báo "trở lại", không báo lại thu nhập âm
+        self.assertEqual(sorted(st["chars"]), ["A", "B"])
+        self.assertNotIn("missing:[0]B", st["alerts"])
+        self.assertTrue(st["alerts"]["income:B"]["active"])
 
     def test_negative_income(self):
         self.tick()
@@ -340,16 +360,16 @@ class StatsTest(unittest.TestCase):
         self.assertEqual(len(recs), 8)
         s = jxtd.compute_stats(recs, by="hour")
         self.assertEqual([k.hour for k, _ in s["buckets"]], [8, 9])
-        a = s["chars"]["[0]A"]
+        a = s["chars"]["A"]  # tên không kèm số nhóm
         # các khoảng 1 phút (08:58→59, 09:01→02) và 2 phút (08:59→09:01) đều dưới ngưỡng gián đoạn
         self.assertAlmostEqual(a["exp"], 1.8e6 * 4 / 60)
         self.assertAlmostEqual(a["van"], 4.0)
-        self.assertAlmostEqual(s["chars"]["[1]B"]["van"], 0.0)
+        self.assertAlmostEqual(s["chars"]["B"]["van"], 0.0)
         self.assertAlmostEqual(s["buckets"][0][1]["van"], 1.0)  # 08:58 → 08:59
         self.assertAlmostEqual(s["total_exp"], (1.8e6 + 0.9e6) * 4 / 60)
         self.assertEqual(s["active_hours"], 2)
-        only_b = jxtd.compute_stats(recs, names=["[1]B"], by="hour")
-        self.assertEqual(list(only_b["chars"]), ["[1]B"])
+        only_b = jxtd.compute_stats(recs, names=["B"], by="hour")
+        self.assertEqual(list(only_b["chars"]), ["B"])
 
     def test_compute_by_day_fills_range(self):
         start, end = jxtd.stats_range("day", self.day.date(), 3)
@@ -358,23 +378,92 @@ class StatsTest(unittest.TestCase):
         self.assertEqual(s["buckets"][0][1]["chars"], set())
 
     def test_match_names_exact_and_multi(self):
-        names = ["[1]A", "[1]AB", "[2]VụtĐêm"]
-        self.assertEqual(jxtd.match_names(names, "[1]A"), ["[1]A"])
-        self.assertEqual(jxtd.match_names(names, "1]a, vut"), ["[1]A", "[1]AB", "[2]VụtĐêm"])
+        names = ["A", "AB", "VụtĐêm"]
+        self.assertEqual(jxtd.match_names(names, "A"), ["A"])
+        self.assertEqual(jxtd.match_names(names, "[1]A"), ["A"])       # gõ kèm số nhóm cũng được
+        self.assertEqual(jxtd.match_names(names, "a, vut"), ["A", "AB", "VụtĐêm"])
         self.assertEqual(jxtd.match_names(names, ""), names)
 
     def test_build_stats_text(self):
         t, names = jxtd.build_stats(self.cfg, self.hist, "hour", day=self.day.date())
-        self.assertEqual(names, ["[0]A", "[1]B"])
+        self.assertEqual(names, ["A", "B"])
         self.assertIn("theo giờ · 03/10 [PC1]", t)
         self.assertIn("Tất cả (2 nhân vật)", t)
         self.assertIn("<pre>", t)
-        self.assertIn("[0]A: 120k EXP · +4.0 vạn · Lv109 +4.0%", t)
+        self.assertIn("A: 120k EXP · +4.0 vạn · Lv109 +4.0%", t)
         t, _ = jxtd.build_stats(self.cfg, self.hist, "hour", "b", day=self.day.date())
-        self.assertIn("👤 [1]B", t)
+        self.assertIn("👤 B", t)
         self.assertIn("NL hiện tại: 50.0 vạn", t)
         t, _ = jxtd.build_stats(self.cfg, self.hist, "day", "zzz", day=self.day.date())
         self.assertIn("Không thấy nhân vật", t)
+
+    def _write(self, folder, t, rows):
+        jxtd.write_history(jxtd.Snapshot(ts=t.timestamp(), found=True, rows=rows), folder, 90)
+
+    def test_group_number_change_is_same_character(self):
+        """[1]A đổi sang [0]A rồi về [1]A: vẫn là một nhân vật, tiền không bị cộng trùng."""
+        from datetime import datetime, timedelta
+        h, t0 = os.path.join(self.tmp, "g"), datetime(2026, 10, 8, 20, 0)
+        for i, (grp, money) in enumerate((("[1]", 100), ("[1]", 110), ("[0]", 120), ("[0]", 130), ("[1]", 140))):
+            a = row(grp + "A")
+            a.money = f"{money}.0 vạn"
+            self._write(h, t0 + timedelta(minutes=i), [a])
+        s = jxtd.compute_stats(jxtd.load_history(h, t0.date(), t0.date()), by="day")
+        self.assertEqual(list(s["chars"]), ["A"])
+        self.assertAlmostEqual(s["total_van"], 40.0)
+        self.assertIn("NL 100.0 vạn → 140.0 vạn (+40.0 vạn)", jxtd.day_summary(self.cfg, h, t0))
+
+    def test_disconnect_glitch_rows_are_ignored(self):
+        """Lúc mất kết nối jxtdAuto hiện cấp 0.0% và EXP/giờ âm rất lớn: không được tính."""
+        from datetime import datetime, timedelta
+        h, t0 = os.path.join(self.tmp, "x"), datetime(2026, 10, 5, 8, 0)
+        seq = [("Luyện công", "1.8m/h", "Lv109 (40.0%)"), ("<Mất kết nối>", "-92.1m/h", "Lv109 (0.0%)"),
+               ("-", "-36.7m/h", "Lv109 (0.0%)"), ("Luyện công", "1.8m/h", "Lv109 (40.2%)")]
+        for i, (task, exp, level) in enumerate(seq):
+            a = row("[0]A", task=task)
+            a.exp, a.level = exp, level
+            self._write(h, t0 + timedelta(minutes=i), [a])
+        s = jxtd.compute_stats(jxtd.load_history(h, t0.date(), t0.date()), by="hour")
+        self.assertAlmostEqual(s["total_exp"], 1.8e6 / 60)     # chỉ phút cuối có EXP/giờ thật
+        self.assertEqual((s["chars"]["A"]["level_first"], s["chars"]["A"]["level_last"]),
+                         ("Lv109 (40.0%)", "Lv109 (40.2%)"))
+        self.assertIn("Lv109: 40% → 40.2% (+0.2%)", jxtd.day_summary(self.cfg, h, t0))
+
+    def test_cumulative_exp_column(self):
+        """jxtdAuto 0.4.5v9: không còn EXP/giờ, có "EXP tích lũy" -> EXP = chênh lệch, kể cả khi bộ đếm về 0."""
+        from datetime import datetime, timedelta
+        h, t0 = os.path.join(self.tmp, "c"), datetime(2026, 10, 9, 23, 57)
+        headers = ["Tên nhân vật", "Tác vụ", "Ẩn", "Ngân lượng", "Cấp/EXP", "EXP tích lũy", "Thu nhập"]
+        # 23:57 6.0m · 23:58 6.5m · 23:59 đọc lỗi tụt về 0 · 00:00 7.0m · 00:01 chạy lại 0.2m · 00:02 0.5m
+        for i, cum in enumerate(("6.0m", "6.5m", "0", "7.0m", "200.0k", "500.0k")):
+            desc = f"Tác vụ: Luyện công, Ẩn: x, Ngân lượng: {100 + i}.0 vạn, Cấp/EXP: Lv63 (44.{i}%), EXP tích lũy: {cum}, Thu nhập: -"
+            r = jxtd.make_row("[1]A", desc, 0x10, headers)
+            self.assertEqual(r.exp, "")
+            self.assertFalse(r.income_negative)                # "-" không phải thu nhập âm
+            self.assertIn("✨ EXP tích lũy", jxtd.fmt_row(r))
+            self.assertNotIn("Ẩn", jxtd.fmt_row(r))
+            self._write(h, t0 + timedelta(minutes=i), [r])
+        day1, day2 = t0.date(), (t0 + timedelta(days=1)).date()
+        both = jxtd.compute_stats(jxtd.load_history(h, day1, day2), by="day", start=day1, end=day2)
+        self.assertAlmostEqual(both["total_exp"], 1.0e6 + 0.3e6)   # 6.0→7.0m, rồi 0.2→0.5m sau khi chạy lại
+        self.assertAlmostEqual(both["total_van"], 5.0)
+        # xem riêng ngày thứ hai: lần đọc đầu ngày vẫn tính được nhờ mốc của ngày trước
+        d2 = jxtd.compute_stats(jxtd.load_history(h, day2, day2), by="hour")
+        self.assertAlmostEqual(d2["total_van"], 3.0)
+        self.assertAlmostEqual(d2["total_exp"], 0.5e6 + 0.3e6)
+        self.assertAlmostEqual(both["buckets"][0][1]["van"] + d2["total_van"], 5.0)   # hai ngày cộng lại khớp tổng
+
+    def test_old_header_longer_rows(self):
+        """File có dòng tiêu đề cũ (12 cột) nhưng dòng dữ liệu mới dài hơn vẫn đọc đúng theo vị trí."""
+        h = os.path.join(self.tmp, "o")
+        os.makedirs(h)
+        with open(os.path.join(h, "2026-10-08.csv"), "w", encoding="utf-8-sig", newline="") as f:
+            f.write("thoi_gian,nhan_vat,tick,dang_chon,tac_vu,exp_gio,thu_nhap,ngan_luong,cap_exp,phu_chet,the_thang,ghi_chu\n")
+            f.write("2026-10-08 10:00:00,[0]A,1,0,Luyện công,1.8m/h,1 vạn,100.0 vạn,Lv1 (1.0%),0 / 0,1h / 1h,\n")
+            f.write("2026-10-08 10:01:00,[0]A,1,0,Luyện công,,1 vạn,101.0 vạn,Lv1 (2.0%),0 / 0,1h / 1h,,33 / 27,17,,35,,- / 8d / -,2.0m\n")
+        recs = jxtd.read_csv(os.path.join(h, "2026-10-08.csv"))
+        self.assertEqual((recs[1]["o_trong"], recs[1]["han_phu"], recs[1]["exp_tich_luy"]), ("33 / 27", "- / 8d / -", "2.0m"))
+        self.assertEqual(recs[0]["exp_tich_luy"], "")
 
     def test_telegram_buttons_and_callbacks(self):
         cfg_path = os.path.join(self.tmp, "cfg.json")
@@ -392,7 +481,7 @@ class StatsTest(unittest.TestCase):
         self.assertTrue(r.html)
         texts = [b["text"] for row_ in r.markup["inline_keyboard"] for b in row_]
         self.assertIn("✅ 👥 Tất cả", texts)
-        r = wd.handle_callback("jx:d:[1]B")
+        r = wd.handle_callback("jx:d:[1]B")   # nút từ bản cũ còn kèm số nhóm vẫn dùng được
         self.assertTrue(r.edit)
         self.assertIn("theo ngày", r)
         self.assertEqual(wd.handle_callback("other"), "")

@@ -952,7 +952,7 @@ class SettingsApp(tk.Tk):
                                 fg=self.c["danger"])
             return
         for r in snap.rows:
-            self.jx_tree.insert("", tk.END, values=(("✓ " if r.checked else "✗ ") + r.name, r.task, r.exp,
+            self.jx_tree.insert("", tk.END, values=(("✓ " if r.checked else "✗ ") + r.name, r.task, r.exp_text,
                                                     r.income, r.money, r.level, r.deaths, r.card))
         lic = f" · license còn {snap.license_days} ngày" if snap.license_days is not None else ""
         self.jx_info.config(text=f"{len(snap.rows)} nhân vật lúc {time.strftime('%H:%M:%S')}{lic}",
@@ -1028,7 +1028,7 @@ class SettingsApp(tk.Tk):
         self.st_char_tree = self._stats_tree(card, (
             ("name", "NHÂN VẬT", 130), ("exp", "EXP", 85), ("van", "TIỀN (VẠN)", 85), ("lv", "CẤP", 190),
             ("hours", "GIỜ CHẠY", 80), ("money", "NGÂN LƯỢNG", 105), ("task", "TÁC VỤ CUỐI", 120)))
-        self.note(p.body, "EXP ước tính bằng EXP/giờ × thời gian giữa các lần đọc (bỏ qua lúc jxtdAuto gián đoạn). "
+        self.note(p.body, "EXP = chênh lệch cột “EXP tích lũy” giữa các lần đọc; dữ liệu cũ chưa có cột đó thì ước tính bằng EXP/giờ × thời gian. "
                           "Tiền = chênh lệch Ngân lượng, nên tiêu hoặc chuyển tiền cũng bị trừ vào.")
 
         self.st_by.trace_add("write", lambda *a: self._stats_mode())
@@ -1099,7 +1099,7 @@ class SettingsApp(tk.Tk):
             self.stats_load()
             return
         self.st_records = recs
-        names = sorted({r["nhan_vat"] for r in recs})
+        names = sorted({r["nhan_vat"] for r in recs if not r.get("seed")})
         if names != self.st_names:
             self.st_names = names
             if self.st_sel is not None:
@@ -1157,9 +1157,14 @@ class SettingsApp(tk.Tk):
         who = "tất cả nhân vật" if names is None else (names[0] if len(names) == 1 else f"{len(names)} nhân vật")
         period = f"{start:%d/%m}" if by == "hour" else f"{start:%d/%m} → {end:%d/%m}"
         t = self.st_tiles
-        t["exp"].set(jxtd.fmt_exp(s["total_exp"]), period)
+        if s["exp_hours"] or not n_chars:
+            t["exp"].set(jxtd.fmt_exp(s["total_exp"]), period)
+        else:  # có chạy nhưng không có số EXP nào được lưu: không phải "kiếm được 0"
+            t["exp"].set("—", f"{period} · chưa có số EXP")
         t["van"].set(jxtd.fmt_van(s["total_van"]) + " vạn", who if n_chars else "không có dữ liệu")
-        t["exp_h"].set(jxtd.fmt_exp(s["total_exp"] / hours) if hours else "—", f"trên {hours} giờ có chạy")
+        exp_hours = s["exp_hours"]  # giờ có số EXP (jxtdAuto đổi cột có thể làm thiếu số EXP một thời gian)
+        t["exp_h"].set(jxtd.fmt_exp(s["total_exp"] / exp_hours) if exp_hours else "—",
+                       f"trên {exp_hours} giờ có số EXP")
         t["van_h"].set((jxtd.fmt_van(s["total_van"] / hours) + " vạn") if hours else "—", f"trên {hours} giờ có chạy")
 
         bk = s["buckets"]

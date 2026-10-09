@@ -60,6 +60,15 @@ DEFAULT_CONFIG = {
 COLUMNS = {"Tác vụ": "task", "EXP/giờ": "exp", "Thu nhập": "income", "Ngân lượng": "money",
            "Cấp/EXP": "level", "Phù/chết": "deaths", "Thẻ tháng": "card"}
 
+GROUP_RE = re.compile(r"^\s*\[\d+\]\s*")
+
+
+def char_name(name):
+    """Tên nhân vật bỏ số nhóm ở đầu: "[1]VụtĐêEm" -> "VụtĐêEm".
+    "[0]", "[1]" chỉ là số định danh nhóm trong jxtdAuto và có thể đổi, không phải một phần của tên."""
+    return GROUP_RE.sub("", name or "")
+
+
 STATE_SYSTEM_SELECTED = 0x2
 STATE_SYSTEM_CHECKED = 0x10
 
@@ -92,8 +101,22 @@ class Row:
     extra: dict = field(default_factory=dict)
 
     @property
+    def key(self):
+        """Tên không kèm số nhóm — dùng làm khóa theo dõi (số nhóm đổi vẫn là nhân vật đó)."""
+        return char_name(self.name)
+
+    @property
     def income_negative(self):
-        return self.income.strip().startswith("-")
+        v = parse_van(self.income)  # "-" (chưa có số) không phải là âm
+        return v is not None and v < 0
+
+    @property
+    def exp_text(self):
+        """EXP/giờ nếu jxtdAuto đang hiện cột đó, không thì EXP tích lũy."""
+        if self.exp:
+            return self.exp
+        cum = self.extra.get("EXP tích lũy")
+        return f"EXP tích lũy {cum}" if cum else ""
 
     @property
     def death_count(self):
@@ -276,18 +299,22 @@ def read(J):
 # ---------------------------------------------------------------- Định dạng tin nhắn
 # Các cột thêm (jxtdAuto cho bật/tắt): (tên cột, nhãn trong tin nhắn, tên cột CSV), gom theo dòng hiển thị
 EXTRA_COLUMNS = [
+    [("EXP tích lũy", "✨ EXP tích lũy", "exp_tich_luy")],
     [("Ô trống", "🎒 Ô trống", "o_trong"), ("Vé MT", "🎟 Vé MT", "ve_mt")],
     [("Nhiệm vụ MT", "📜 NV MT", "nv_mt"), ("N. động", "⚡ N.động", "nang_dong")],
     [("Xu/Kim đỉnh", "🪙 Xu/Kim đỉnh", "xu_kim_dinh")],
     [("Hạn phù", "📿 Hạn phù", "han_phu")],
 ]
 EXTRA_KNOWN = [c for line in EXTRA_COLUMNS for c in line]
+HIDDEN_COLUMNS = {"Ẩn"}  # cột không mang thông tin theo dõi (cửa sổ game đang ẩn)
+# Thứ tự cột thêm trong CSV: chỉ được NỐI THÊM vào cuối để file cũ vẫn đọc đúng theo vị trí
+CSV_EXTRA = ["o_trong", "ve_mt", "nv_mt", "nang_dong", "xu_kim_dinh", "han_phu", "exp_tich_luy"]
 
 
 def fmt_row(r):
     mark = "✅" if r.checked else "⬜"
     lines = [f"{mark} {r.name}",
-             f"   {r.task or '?'} · {r.exp or '?'}",
+             f"   {r.task or '?'}" + (f" · {r.exp}" if r.exp else ""),
              f"   💰 {r.income or '?'} · NL {r.money or '?'}",
              f"   📈 {r.level or '?'} · Phù/chết {r.deaths or '?'}"]
     if r.card:
@@ -296,7 +323,7 @@ def fmt_row(r):
         parts = [f"{label} {r.extra[col]}" for col, label, _ in group if r.extra.get(col)]
         if parts:
             lines.append("   " + " · ".join(parts))
-    known = {col for col, _, _ in EXTRA_KNOWN}
+    known = {col for col, _, _ in EXTRA_KNOWN} | HIDDEN_COLUMNS
     lines += [f"   • {col}: {val}" for col, val in r.extra.items() if col not in known and val]  # cột chưa biết
     return "\n".join(lines)
 
@@ -351,7 +378,8 @@ def build_short(cfg, snap, missing=()):
     if snap.license_days is not None:
         lines[0] += f" · license {snap.license_days} ngày"
     for r in snap.rows:
-        lines.append(f"{'✅' if r.checked else '⬜'} {r.name} · {r.task or '?'} · {r.exp or '?'} · {r.income or '?'}")
+        lines.append(" · ".join(x for x in (f"{'✅' if r.checked else '⬜'} {r.name}", r.task or "?", r.exp_text,
+                                            r.income or "?") if x))
     if missing:
         lines.append("❓ Mất khỏi danh sách: " + ", ".join(missing))
     return "\n".join(lines)
@@ -380,26 +408,42 @@ def level_change(a, b):
     return f"Lv{la[0]} → Lv{lb[0]} ({lb[0] - la[0]:+d} cấp)"
 
 
+def read_csv(path):
+    """Đọc một file lịch sử thành list dict theo VỊ TRÍ cột của CSV_FIELDS (không theo dòng tiêu đề):
+    các bản sau chỉ nối thêm cột vào cuối, nên file có tiêu đề cũ mà dòng dài hơn vẫn đọc đúng."""
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f))
+    return [dict(zip(CSV_FIELDS, r + [""] * (len(CSV_FIELDS) - len(r)))) for r in rows[1:] if r]
+
+
+def record_glitch(rec):
+    """Dòng đọc lúc nhân vật mất kết nối: jxtdAuto hiện cấp "(0.0%)" và EXP/giờ âm rất lớn — không phải số thật."""
+    rate = parse_exp_rate(rec.get("exp_gio"))
+    if rate is not None and rate < 0:
+        return True
+    lv = _level(rec.get("cap_exp"))
+    return bool(lv and lv[1] == 0.0 and task_status(rec.get("tac_vu"), DEFAULT_CONFIG) != "ok")
+
+
 def day_summary(cfg, folder, day=None):
     """Tổng kết một ngày cho từng nhân vật: EXP/cấp, thu nhập, ngân lượng, số lần chết, đổi tác vụ, gián đoạn."""
     day = day or datetime.now()
-    path = os.path.join(folder, day.strftime("%Y-%m-%d") + ".csv")
     try:
-        with open(path, encoding="utf-8-sig", newline="") as f:
-            data = list(csv.DictReader(f))
+        data = read_csv(os.path.join(folder, day.strftime("%Y-%m-%d") + ".csv"))
     except FileNotFoundError:
         return f"📅 Chưa có dữ liệu jxtdAuto ngày {day:%d/%m} (đã bật theo dõi trong Cài đặt chưa?)."
     if not data:
         return f"📅 Chưa có dữ liệu jxtdAuto ngày {day:%d/%m}."
     chars, gaps = {}, 0
     for d in data:
-        name = d.get("nhan_vat") or ""
+        name = char_name(d.get("nhan_vat"))
         if not name:
             gaps += "không thấy" in (d.get("ghi_chu") or "")
             continue
         c = chars.get(name)
         if c is None:
-            chars[name] = c = {"first": d, "tasks": 0, "deaths": 0}
+            chars[name] = c = {"first": d, "tasks": 0, "deaths": 0, "lv_first": "", "lv_last": "",
+                               "nl_first": "", "nl_last": ""}
         else:
             if task_key(d.get("tac_vu")) != task_key(c["last"].get("tac_vu")):
                 c["tasks"] += 1
@@ -407,6 +451,12 @@ def day_summary(cfg, folder, day=None):
             if d0 is not None and d1 is not None and d1 > d0:
                 c["deaths"] += d1 - d0
         c["last"] = d
+        if _level(d.get("cap_exp")) and not record_glitch(d):  # bỏ dòng lỗi lúc mất kết nối
+            c["lv_first"] = c["lv_first"] or d["cap_exp"]
+            c["lv_last"] = d["cap_exp"]
+        if d.get("ngan_luong"):
+            c["nl_first"] = c["nl_first"] or d["ngan_luong"]
+            c["nl_last"] = d["ngan_luong"]
 
     t0, t1 = data[0]["thoi_gian"][11:16], data[-1]["thoi_gian"][11:16]
     head = f"📅 jxtdAuto ngày {day:%d/%m} ({t0} → {t1})"
@@ -416,20 +466,22 @@ def day_summary(cfg, folder, day=None):
         poll = cfg.get("jxtd", {}).get("poll_sec", 60)
         lines.append(f"🔴 Không thấy jxtdAuto ≈ {fmt_duration(gaps * poll)}")
     for n, c in chars.items():
-        a, b = c["first"], c["last"]
-        la, lb = _level(a.get("cap_exp")), _level(b.get("cap_exp"))
+        b = c["last"]
+        la, lb = _level(c["lv_first"]), _level(c["lv_last"])
         if la and lb:
             if lb[0] == la[0]:
                 exp = f"Lv{lb[0]}: {la[1]:g}% → {lb[1]:g}% ({lb[1] - la[1]:+.1f}%)"
             else:
                 exp = f"Lv{la[0]} {la[1]:g}% → Lv{lb[0]} {lb[1]:g}% ({lb[0] - la[0]:+d} cấp)"
         else:
-            exp = f"{a.get('cap_exp') or '?'} → {b.get('cap_exp') or '?'}"
+            exp = "?"
+        va, vb = parse_van(c["nl_first"]), parse_van(c["nl_last"])
+        diff = f" ({fmt_van(vb - va)} vạn)" if va is not None and vb is not None else ""
         mark = "✅" if b.get("tick") == "1" else "⬜"
         lines += ["", f"{mark} {n}",
                   f"   📈 {exp}",
-                  f"   💰 {a.get('thu_nhap') or '?'} → {b.get('thu_nhap') or '?'}",
-                  f"   🏦 NL {a.get('ngan_luong') or '?'} → {b.get('ngan_luong') or '?'}",
+                  f"   🏦 NL {c['nl_first'] or '?'} → {c['nl_last'] or '?'}{diff}",
+                  f"   💰 Thu nhập (jxtdAuto): {b.get('thu_nhap') or '?'}",
                   f"   💀 chết {c['deaths']} · 🔄 đổi tác vụ {c['tasks']} · đang: {b.get('tac_vu') or '?'}"]
     return "\n".join(lines)
 
@@ -489,29 +541,45 @@ def history_days(folder):
 
 
 def load_history(folder, start, end):
-    """Các dòng CSV (có tên nhân vật) từ ngày `start` đến `end` (date, gồm cả 2 đầu), kèm khóa "t" = datetime."""
-    out, d = [], start
-    while d <= end:
+    """Các dòng CSV (có tên nhân vật) từ ngày `start` đến `end` (date, gồm cả 2 đầu), kèm khóa "t" = datetime.
+
+    - Tên nhân vật được bỏ số nhóm ("[1]Tên" -> "Tên") để số nhóm đổi không tách thành 2 nhân vật.
+    - Kèm vài dòng CUỐI của mỗi nhân vật trong ngày liền trước, đánh dấu "seed": chỉ làm mốc để tính chênh lệch
+      cho lần đọc đầu tiên của `start` (không được cộng vào thống kê).
+    """
+    def day_rows(d):
         try:
-            with open(os.path.join(folder, d.strftime("%Y-%m-%d") + ".csv"), encoding="utf-8-sig", newline="") as f:
-                for rec in csv.DictReader(f):
-                    if not rec.get("nhan_vat"):
-                        continue
-                    try:
-                        rec["t"] = datetime.strptime(rec["thoi_gian"], "%Y-%m-%d %H:%M:%S")
-                    except (KeyError, TypeError, ValueError):
-                        continue
-                    out.append(rec)
+            rows = read_csv(os.path.join(folder, d.strftime("%Y-%m-%d") + ".csv"))
         except OSError:
-            pass
+            return []
+        out = []
+        for rec in rows:
+            rec["nhan_vat"] = char_name(rec.get("nhan_vat"))
+            if not rec["nhan_vat"]:
+                continue
+            try:
+                rec["t"] = datetime.strptime(rec["thoi_gian"], "%Y-%m-%d %H:%M:%S")
+            except (KeyError, TypeError, ValueError):
+                continue
+            out.append(rec)
+        return out
+
+    seeds = {}  # vài dòng cuối (không chỉ 1) để nhận ra được lần đọc lỗi ngay trước nửa đêm
+    for rec in day_rows(start - timedelta(days=1)):
+        if not record_glitch(rec) and (rec.get("ngan_luong") or rec.get("exp_tich_luy")):
+            seeds.setdefault(rec["nhan_vat"], []).append(rec)
+    out = [dict(rec, seed=True) for recs in seeds.values() for rec in recs[-10:]]
+    d = start
+    while d <= end:
+        out += day_rows(d)
         d += timedelta(days=1)
     out.sort(key=lambda r: r["t"])
     return out
 
 
 def match_names(names, query):
-    """Lọc tên theo chuỗi "tên1, tên2" (không cần dấu); chuỗi rỗng = tất cả."""
-    raw = [q.strip() for q in (query or "").split(",") if q.strip()]
+    """Lọc tên theo chuỗi "tên1, tên2" (không cần dấu, có số nhóm "[1]" ở đầu cũng được); chuỗi rỗng = tất cả."""
+    raw = [char_name(q.strip()) for q in (query or "").split(",") if q.strip()]
     exact = [q for q in raw if q in names]  # tên đầy đủ (từ nút bấm) thì khớp đúng tên đó
     qs = [norm(q) for q in raw if q not in names]
     return [n for n in names if not raw or n in exact or any(q in norm(n) for q in qs)]
@@ -520,44 +588,69 @@ def match_names(names, query):
 def compute_stats(records, names=None, by="hour", start=None, end=None, poll_sec=60):
     """Gộp EXP và tiền vạn kiếm được theo giờ (by="hour") hoặc theo ngày (by="day").
 
-    - EXP: cộng dồn EXP/giờ × thời gian giữa 2 lần đọc liên tiếp (bỏ qua khoảng gián đoạn dài) — ước tính.
+    - EXP: chênh lệch cột "EXP tích lũy" giữa 2 lần đọc (số của jxtdAuto). Dữ liệu cũ chưa có cột đó thì
+      ước tính bằng EXP/giờ × thời gian giữa 2 lần đọc liên tiếp (bỏ qua khoảng gián đoạn dài).
     - Tiền: chênh lệch Ngân lượng giữa 2 lần đọc liên tiếp, quy ra vạn (tiêu/chuyển tiền cũng bị trừ).
+    - Dòng lỗi lúc mất kết nối (xem record_glitch) không được tính; dòng "seed" chỉ làm mốc.
     - names: danh sách nhân vật được chọn (None = tất cả).
-    Trả về dict: buckets [(datetime, {"exp", "van", "chars"})], chars {tên: {...}}, total_exp, total_van, active_hours.
+    Trả về dict: buckets [(datetime, {"exp", "van", "chars", "exp_known"})], chars {tên: {...}}, total_exp,
+    total_van, active_hours (số giờ có chạy), exp_hours (số giờ có số EXP). exp_known = False nghĩa là mốc đó không có số EXP nào được lưu (hiện "—", không phải 0).
     """
     gap_max = max(3 * poll_sec, 300)
     sel = None if names is None else set(names)
     trunc = (lambda t: t.replace(minute=0, second=0, microsecond=0)) if by == "hour" else \
         (lambda t: t.replace(hour=0, minute=0, second=0, microsecond=0))
-    buckets, chars, prev, active = {}, {}, {}, set()
+    buckets, chars, prev, active, active_exp = {}, {}, {}, set(), set()
     for rec in records:
         name, t = rec["nhan_vat"], rec["t"]
         if sel is not None and name not in sel:
             continue
-        rate, van = parse_exp_rate(rec.get("exp_gio")), parse_van(rec.get("ngan_luong"))
+        glitch = record_glitch(rec)
+        rate = None if glitch else parse_exp_rate(rec.get("exp_gio"))
+        cum = None if glitch else parse_exp_rate(rec.get("exp_tich_luy"))
+        van = parse_van(rec.get("ngan_luong"))
+        p = prev.get(name) or {}
+        cur = {"t": t, "van": van if van is not None else p.get("van"),
+               "cum": cum if cum is not None else p.get("cum"), "hold": p.get("hold"), "hold_t": p.get("hold_t")}
+        prev[name] = cur
+        dt = (t - p["t"]).total_seconds() if p else 0
+        e = 0.0  # EXP kiếm được từ lần đọc trước
+        if cum is not None and p.get("cum") is not None:
+            hold_ok = p.get("hold") is not None and (t - p["hold_t"]).total_seconds() <= 600
+            if hold_ok and cum >= p["hold"]:      # số tụt rồi về lại như cũ trong vài phút: chỉ là đọc lỗi
+                e, cur["hold"] = cum - p["hold"], None
+            elif cum >= p["cum"]:
+                e = cum - p["cum"]
+            else:                                 # bộ đếm về 0 (jxtdAuto/nhân vật chạy lại): lấy mốc mới
+                cur["hold"], cur["hold_t"] = p["cum"], t
+        elif cum is None and rate is not None and rate > 0 and 0 < dt <= gap_max:
+            e = rate * dt / 3600
+        if rec.get("seed"):
+            continue
         c = chars.get(name)
         if c is None:
-            chars[name] = c = {"exp": 0.0, "van": 0.0, "seconds": 0.0,
-                               "level_first": rec.get("cap_exp") or ""}
-        c.update(level_last=rec.get("cap_exp") or c.get("level_last", ""), task=rec.get("tac_vu") or "",
-                 tick=rec.get("tick") == "1", van_last=van if van is not None else c.get("van_last"))
-        key = trunc(t)
-        b = buckets.setdefault(key, {"exp": 0.0, "van": 0.0, "chars": set()})
+            chars[name] = c = {"exp": 0.0, "van": 0.0, "seconds": 0.0, "level_first": "", "level_last": "",
+                               "exp_known": False}
+        level = "" if glitch else (rec.get("cap_exp") or "")
+        if level:
+            c["level_first"] = c["level_first"] or level
+            c["level_last"] = level
+        c.update(task=rec.get("tac_vu") or "", tick=rec.get("tick") == "1", van_last=cur["van"])
+        b = buckets.setdefault(trunc(t), {"exp": 0.0, "van": 0.0, "chars": set(), "exp_known": False})
         b["chars"].add(name)
+        if rate is not None or cum is not None:
+            b["exp_known"] = c["exp_known"] = True  # có số EXP để tính (khác với "kiếm được 0")
+            active_exp.add(t.replace(minute=0, second=0, microsecond=0))
         active.add(t.replace(minute=0, second=0, microsecond=0))
-        p = prev.get(name)
-        if p:
-            dt = (t - p["t"]).total_seconds()
-            if 0 < dt <= gap_max:
-                c["seconds"] += dt
-                if rate:
-                    e = rate * dt / 3600
-                    c["exp"] += e
-                    b["exp"] += e
-            if van is not None and p["van"] is not None:
-                c["van"] += van - p["van"]
-                b["van"] += van - p["van"]
-        prev[name] = {"t": t, "van": van if van is not None else (p or {}).get("van")}
+        if not p:
+            continue
+        if 0 < dt <= gap_max:
+            c["seconds"] += dt
+        c["exp"] += e
+        b["exp"] += e
+        if van is not None and p.get("van") is not None:
+            c["van"] += van - p["van"]
+            b["van"] += van - p["van"]
 
     # Điền các mốc trống để biểu đồ liền mạch
     keys = sorted(buckets)
@@ -570,12 +663,12 @@ def compute_stats(records, names=None, by="hour", start=None, end=None, poll_sec
     step = timedelta(hours=1) if by == "hour" else timedelta(days=1)
     out, k = [], lo
     while k is not None and k <= hi:
-        out.append((k, buckets.get(k, {"exp": 0.0, "van": 0.0, "chars": set()})))
+        out.append((k, buckets.get(k, {"exp": 0.0, "van": 0.0, "chars": set(), "exp_known": False})))
         k += step
     return {"buckets": out, "chars": chars, "by": by,
             "total_exp": sum(c["exp"] for c in chars.values()),
             "total_van": sum(c["van"] for c in chars.values()),
-            "active_hours": len(active)}
+            "active_hours": len(active), "exp_hours": len(active_exp)}
 
 
 def stats_range(by, day=None, days=7):
@@ -589,11 +682,11 @@ def build_stats(cfg, folder, by="hour", query="", day=None, days=7):
     import html
     start, end = stats_range(by, day, days)
     records = load_history(folder, start, end)
-    all_names = sorted({r["nhan_vat"] for r in records})
+    all_names = sorted({r["nhan_vat"] for r in records if not r.get("seed")})
     title = (f"jxtdAuto theo giờ · {start:%d/%m}" if by == "hour"
              else f"jxtdAuto theo ngày · {start:%d/%m} → {end:%d/%m}")
     head = html.escape(header_line(cfg, "📊" if by == "hour" else "📈", title))
-    if not records:
+    if not all_names:
         return head + "\nChưa có dữ liệu (đã bật theo dõi jxtdAuto trong Cài đặt chưa?).", all_names
     names = match_names(all_names, query)
     if not names:
@@ -605,15 +698,16 @@ def build_stats(cfg, folder, by="hour", query="", day=None, days=7):
     for k, b in s["buckets"]:
         if by == "hour" and not b["chars"]:
             continue
-        rows.append((f"{k:%H}h" if by == "hour" else f"{k:%d/%m}", fmt_exp(b["exp"]) if b["chars"] else "-",
+        rows.append((f"{k:%H}h" if by == "hour" else f"{k:%d/%m}",
+                     "-" if not b["chars"] else (fmt_exp(b["exp"]) if b["exp_known"] else "—"),
                      fmt_van(b["van"]) if b["chars"] else "-"))
     rows.append(("Tổng", fmt_exp(s["total_exp"]), fmt_van(s["total_van"])))
     w = [max(len(r[i]) for r in rows) for i in range(3)]
     table = "\n".join(f"{a:<{w[0]}}  {b:>{w[1]}}  {c:>{w[2]}}" for a, b, c in rows)
     lines = [head, html.escape(who), f"<pre>{html.escape(table)}</pre>"]
     if s["active_hours"]:
-        lines.append(f"⏱ TB mỗi giờ: {fmt_exp(s['total_exp'] / s['active_hours'])} EXP · "
-                     f"{fmt_van(s['total_van'] / s['active_hours'])} vạn")
+        exp_avg = fmt_exp(s["total_exp"] / s["exp_hours"]) if s["exp_hours"] else "—"  # chỉ chia cho giờ có số EXP
+        lines.append(f"⏱ TB mỗi giờ: {exp_avg} EXP · {fmt_van(s['total_van'] / s['active_hours'])} vạn")
     if len(names) > 1:
         lines.append("")
         for n, c in sorted(s["chars"].items(), key=lambda kv: -kv[1]["exp"]):
@@ -628,7 +722,9 @@ def build_stats(cfg, folder, by="hour", query="", day=None, days=7):
                                      + (f" ({lc})" if lc else "")))
             lines.append(html.escape(f"🏦 NL hiện tại: {fmt_van(c['van_last'], sign=False)} vạn · đang: {c['task'] or '?'}")
                          if c.get("van_last") is not None else html.escape(f"Đang: {c['task'] or '?'}"))
-    lines.append("<i>EXP ước tính từ EXP/giờ; tiền = chênh lệch Ngân lượng.</i>")
+    if any(b["chars"] and not b["exp_known"] for _, b in s["buckets"]):
+        lines.append("<i>“—”: không có số EXP được lưu cho mốc đó (jxtdAuto đổi cột trước khi NetWatchdog cập nhật).</i>")
+    lines.append("<i>EXP = chênh lệch EXP tích lũy (dữ liệu cũ: ước tính từ EXP/giờ); tiền = chênh lệch Ngân lượng.</i>")
     return "\n".join(lines), all_names
 
 
@@ -697,7 +793,8 @@ def capture_png(J):
 
 # ---------------------------------------------------------------- Lịch sử CSV
 CSV_FIELDS = ["thoi_gian", "nhan_vat", "tick", "dang_chon", "tac_vu", "exp_gio", "thu_nhap",
-              "ngan_luong", "cap_exp", "phu_chet", "the_thang", "ghi_chu"] + [c for _, _, c in EXTRA_KNOWN]
+              "ngan_luong", "cap_exp", "phu_chet", "the_thang", "ghi_chu"] + CSV_EXTRA
+EXTRA_BY_CSV = {c: col for col, _, c in EXTRA_KNOWN}
 NOTE_COL = CSV_FIELDS.index("ghi_chu")
 
 
@@ -717,7 +814,7 @@ def write_history(snap, folder, keep_days):
             w.writerow(line)
         for r in snap.rows:
             w.writerow([t, r.name, int(r.checked), int(r.selected), r.task, r.exp, r.income,
-                        r.money, r.level, r.deaths, r.card, ""] + [r.extra.get(col, "") for col, _, _ in EXTRA_KNOWN])
+                        r.money, r.level, r.deaths, r.card, ""] + [r.extra.get(EXTRA_BY_CSV[c], "") for c in CSV_EXTRA])
     if new:  # sang ngày mới thì xóa file quá hạn
         cutoff = (day - timedelta(days=keep_days)).strftime("%Y-%m-%d")
         for fn in os.listdir(folder):
@@ -861,22 +958,23 @@ class JxMonitor:
     def _check_chars(self, cfg, st, alerts, snap, now, cd):
         J = cfg["jxtd"]
         chars = st.setdefault("chars", {})
-        present = {r.name: r for r in snap.rows}
+        self._migrate_names(st)
+        present = {r.key: r for r in snap.rows}
         for r in snap.rows:
-            c = chars.setdefault(r.name, {"task": r.task, "deaths": r.death_count})
+            c = chars.setdefault(r.key, {"task": r.task, "deaths": r.death_count})
             c["last_seen"] = now
             if J["char_missing"]:
-                alerts.update(f"missing:{r.name}", False, "", lambda d, r=r: header_line(
+                alerts.update(f"missing:{r.key}", False, "", lambda d, r=r: header_line(
                     cfg, "🟢", f"{r.name} đã trở lại danh sách (vắng {d})") + "\n\n" + fmt_row(r), cd, now=now)
             if J["unticked"]:
                 alerts.update(
-                    f"unticked:{r.name}", not r.checked,
+                    f"unticked:{r.key}", not r.checked,
                     lambda r=r: header_line(cfg, "⬜", f"{r.name} bị bỏ tick") + "\n\n" + fmt_row(r),
                     lambda d, r=r: header_line(cfg, "🟢", f"{r.name} đã được tick lại (sau {d})"),
                     cd, now=now)
             if J["negative_income"]:
                 alerts.update(
-                    f"income:{r.name}", r.income_negative,
+                    f"income:{r.key}", r.income_negative,
                     lambda r=r: header_line(cfg, "📉", f"{r.name} thu nhập âm: {r.income}") + "\n\n" + fmt_row(r),
                     lambda d, r=r: header_line(cfg, "🟢", f"{r.name} thu nhập hết âm: {r.income}"),
                     cd, now=now)
@@ -889,7 +987,7 @@ class JxMonitor:
                     c["deaths"] = dc
                 elif dc > old and not J["death"]:
                     c["deaths"] = dc
-                elif dc > old and alerts.event(f"death:{r.name}", cd, now):
+                elif dc > old and alerts.event(f"death:{r.key}", cd, now):
                     alerts.send(header_line(cfg, "💀", f"{r.name} chết thêm {dc - old} lần (tổng {dc})")
                                 + "\n\n" + fmt_row(r))
                     c["deaths"] = dc
@@ -914,6 +1012,24 @@ class JxMonitor:
                               "", cd, now=now)
         return missing
 
+    @staticmethod
+    def _migrate_names(st):
+        """Trạng thái lưu từ bản cũ dùng khóa có số nhóm ("[1]Tên"): đổi sang tên không kèm số nhóm.
+        Các cảnh báo "mất khỏi danh sách" theo tên cũ là báo nhầm do đổi số nhóm nên bỏ luôn."""
+        chars = st.setdefault("chars", {})
+        for k in [k for k in chars if char_name(k) != k]:
+            old, nk = chars.pop(k), char_name(k)
+            if nk not in chars or old.get("last_seen", 0) > chars[nk].get("last_seen", 0):
+                chars[nk] = old
+        alerts = st.setdefault("alerts", {})
+        for k in list(alerts):
+            kind, sep, name = k.partition(":")
+            if not sep or char_name(name) == name:
+                continue
+            old, nk = alerts.pop(k), f"{kind}:{char_name(name)}"
+            if kind != "missing" and nk not in alerts:
+                alerts[nk] = old
+
     def _check_stuck(self, cfg, alerts, c, r, now, cd):
         """Nhân vật đứng chơi: jxtdAuto báo Lỗi/Nghỉ (vd. đầy hành trang, về thành liên tục) qua vài lần đọc,
         hoặc không làm gì ("-", <Mất kết nối>, Treo...) quá `idle_min` phút. Đổi nhiệm vụ thì không báo."""
@@ -927,7 +1043,7 @@ class JxMonitor:
             c["stuck_since"] = since
             c["stuck_reads"] = c.get("stuck_reads", 0) + 1
         dur = now - since
-        key = f"stuck:{r.name}"
+        key = f"stuck:{r.key}"
         # đã báo kẹt thì giữ đến khi làm việc lại (vd. "Nghỉ" chuyển sang <Mất kết nối> vẫn là đang kẹt)
         active = status != "ok" and (
             alerts.st.get(key, {}).get("active", False)
@@ -947,7 +1063,7 @@ class JxMonitor:
         h = r.card_hours
         if h is None:
             return
-        low_key = f"card:{r.name}"
+        low_key = f"card:{r.key}"
         was_active = alerts.st.get(low_key, {}).get("active", False)
         alerts.update(
             low_key, h <= cfg["jxtd"]["month_card_warn_hours"],
@@ -961,6 +1077,6 @@ class JxMonitor:
             low["onset_hours"] = h
         # đã báo "sắp hết" từ trước rồi mới về 0 -> báo thêm "đã hết"; gia hạn thì tin ở trên lo
         alerts.update(
-            f"card_out:{r.name}", h <= 0 and low.get("onset_hours", 0) > 0,
+            f"card_out:{r.key}", h <= 0 and low.get("onset_hours", 0) > 0,
             lambda: header_line(cfg, "⛔", f"{r.name} đã HẾT thẻ tháng") + "\n\n" + fmt_row(r),
             "", cd, now=now)

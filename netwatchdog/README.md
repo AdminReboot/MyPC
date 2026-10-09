@@ -75,9 +75,11 @@ Bật ở trang **jxtdAuto** trong cửa sổ Cài đặt (mặc định tắt).
 - Cảnh báo ngay khi: jxtdAuto bị tắt / không thấy cửa sổ (nhắc lại mỗi 30 phút); nhân vật biến khỏi danh sách hoặc bị bỏ tick; thu nhập chuyển sang âm; **nhân vật đứng chơi** (xem dưới); số lần chết tăng; thẻ tháng còn ≤ 24 giờ và khi hết hẳn; license jxtdAuto còn ≤ 7 ngày.
 - **Nhân vật đứng chơi**: chỉ báo khi nhân vật không làm gì, còn đổi nhiệm vụ là bình thường nên không báo. Báo khi cột Tác vụ hiện `Lỗi: …` (vd. "Kiểm tra đầy hành trang") hoặc `Nghỉ … do về thành liên tục` qua 3 lần đọc liên tiếp (lỗi đăng nhập 1–2 phút tự hết thì bỏ qua), hoặc khi nhân vật không có tác vụ / `<Mất kết nối>` / `Treo` / đang đăng nhập kéo dài quá 5 phút. Nhắc lại mỗi 30 phút khi vẫn kẹt, và gửi "🟢 … hoạt động lại" khi làm việc lại. Danh sách từ khóa chỉnh được trong `config.json` (`danger_keywords`, `idle_exact`, `idle_keywords`).
 - Mỗi loại cảnh báo của một nhân vật gửi tối đa 1 lần / 30 phút. Hết lỗi thì gửi tin "🟢 … trở lại".
+- **Số nhóm** `[0]`, `[1]` trước tên chỉ là số định danh nhóm trong jxtdAuto và có thể đổi: NetWatchdog theo dõi, cảnh báo và thống kê theo **tên nhân vật** phía sau, nên đổi nhóm không bị báo "mất khỏi danh sách" và không tách số liệu.
 - Không đọc được phần "THÔNG TIN NHIỆM VỤ": jxtdAuto vẽ thẳng lên tab và chỉ hiện nhân vật đang chọn.
 - **Thống kê** (trang **Thống kê jxtdAuto** trong cửa sổ Cài đặt, hoặc `/jx_gio`, `/jx_ngay`): EXP và tiền vạn kiếm được theo từng giờ trong một ngày, hoặc theo từng ngày (7 / 14 / 30 ngày). Chọn tất cả, một hoặc vài nhân vật. Có ô tổng và trung bình mỗi giờ, biểu đồ cột (di chuột để xem số), bảng chi tiết theo thời gian và theo nhân vật (cấp đầu → cuối, số giờ chạy, ngân lượng hiện tại). Tính từ lịch sử CSV ở trên:
-  - EXP là **ước tính**: EXP/giờ × thời gian giữa hai lần đọc; bỏ qua những lúc jxtdAuto gián đoạn.
+  - EXP = chênh lệch cột **EXP tích lũy** giữa hai lần đọc (jxtdAuto 0.4.5v9 trở lên). Dữ liệu cũ chưa có cột đó thì ước tính bằng EXP/giờ × thời gian giữa hai lần đọc. Mốc nào không có số EXP được lưu thì hiện “—”, không phải 0.
+  - Các dòng đọc lúc nhân vật mất kết nối (jxtdAuto hiện cấp `0.0%`, EXP/giờ âm) không được tính.
   - Tiền = chênh lệch cột Ngân lượng (quy ra vạn, 1 vạn = 10.000 lượng). Tiêu hay chuyển tiền đi cũng bị trừ vào.
 - Kiểm tra nhanh: nút **Đọc ngay** ở trang jxtdAuto, hoặc `python netwatchdog.py --jxtd` (ghi kết quả vào log).
 

@@ -710,7 +710,7 @@ class Watchdog:
         if cmd == "/jx_gon":
             return self.jx.short_text()
         if cmd == "/jx_nv":
-            names = [r.name for r in self.jx.last_snap.rows]
+            names = [r.key for r in self.jx.last_snap.rows]  # không kèm số nhóm, khớp với thống kê
             if not names:
                 return "🎮 Không có nhân vật nào trong jxtdAuto."
             rows = [[{"text": n, "callback_data": cb_data("c", n)} for n in names[i:i + 3]]
