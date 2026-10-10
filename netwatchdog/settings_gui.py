@@ -827,11 +827,17 @@ class SettingsApp(tk.Tk):
 
         self.gap(p.body)
         card = Card(p.body, self, "Ứng dụng tự mở",
-                    "Để ứng dụng tự mở sau khi khởi động lại, Windows cần TỰ ĐĂNG NHẬP (xem README).")
+                    "Windows phải đăng nhập xong thì NetWatchdog mới chạy được. Nếu máy đang khóa, ứng dụng "
+                    "được mở sau khi bạn mở khóa (xem README để máy tự mở khóa hoàn toàn).")
         card.pack(fill="x")
         self.launch_mode = tk.StringVar(value=self.cfg.get("launch_apps", "after_reboot"))
         Segmented(card.add_row("Khi nào mở"), self, self.launch_mode,
                   (("after_reboot", "Sau khi tự reboot"), ("every_start", "Mỗi lần mở máy"), ("never", "Không"))).pack()
+        L = self.cfg["launch"]
+        self.toggle(card, "Chờ mở khóa màn hình", "Máy đang khóa thì đợi đến khi mở khóa rồi mới mở ứng dụng.",
+                    "launch_unlock", L.get("wait_unlock", True))
+        self.number(card, "Chờ máy ổn định", "Sau khi mở khóa hoặc vừa bật máy, đợi các chương trình khác chạy xong.",
+                    "launch_delay", L.get("delay_sec", 60), "giây")
         tk.Frame(card, bg=c["border"], height=1).pack(fill="x", padx=20)
         box = tk.Frame(card, bg=c["surface"], highlightthickness=1, highlightbackground=c["border"])
         box.pack(fill="x", padx=20, pady=(14, 0))
@@ -1547,6 +1553,7 @@ class SettingsApp(tk.Tk):
             max_reboots_per_day=self._int("max_reboots", 3),
             min_uptime_before_reboot_min=self._int("min_uptime", 15))
         c["launch_apps"] = self.launch_mode.get()
+        c["launch"].update(wait_unlock=self.vars["launch_unlock"].get(), delay_sec=self._int("launch_delay", 60))
         c["jxtd"].update(
             enabled=self.vars["jx_on"].get(),
             report_min=self._int("jx_report", 60),

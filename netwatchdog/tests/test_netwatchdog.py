@@ -31,6 +31,7 @@ class FakeNet:
             (sysops, "uptime_sec"): lambda: 3600.0,
             (sysops, "launch_app"): lambda app: (self.calls.append(("launch", app["path"])) or (True, "OK")),
             (sysops, "is_running"): lambda path: False,
+            (sysops, "session_locked"): lambda: False,
             (sysops, "current_ssid"): lambda: "",
         }
         for (mod, name), fn in patches.items():
@@ -137,7 +138,7 @@ class StartupTest(Base):
         net = FakeNet()
         wd = self.make(net)
         wd.state.set(pending_launch=True, reboot_reason="test")
-        wd.on_start()
+        wd.on_start(background=False)
         self.assertIn(("launch", r"C:\Apps\pos.exe"), net.calls)
         self.assertFalse(wd.state.get("pending_launch"))
         self.assertEqual(wd.last_fix, "khởi động lại máy")
@@ -145,8 +146,73 @@ class StartupTest(Base):
     def test_no_launch_on_normal_start(self):
         net = FakeNet()
         wd = self.make(net)
-        wd.on_start()
+        wd.on_start(background=False)
         self.assertFalse([c for c in net.calls if c[0] == "launch"])
+
+    def _launch_setup(self, locked_reads, uptime=3600.0, **launch):
+        """Watchdog có ứng dụng cần mở; session_locked() trả lần lượt `locked_reads` rồi False."""
+        net = FakeNet()
+        wd = self.make(net)
+        cfg = nw.load_config(wd.config_path)
+        cfg["launch"].update(launch)
+        nw.save_json(wd.config_path, cfg)
+        wd._cfg = None
+        reads = list(locked_reads)
+        sysops.session_locked = lambda: reads.pop(0) if reads else False
+        sysops.uptime_sec = lambda: uptime
+        sleeps, sent = [], []
+        wd.sleep = lambda sec: sleeps.append(sec) or False
+        wd.tg.send = sent.append
+        wd.state.set(pending_launch=True, reboot_reason="test")
+        launched = lambda: [c for c in net.calls if c[0] == "launch"]  # noqa: E731
+        return wd, sleeps, sent, launched
+
+    def test_launch_waits_for_unlock_then_settles(self):
+        # on_start đọc 1 lần (đang khóa), launch_when_ready đọc 1 lần, vòng chờ đọc thêm 3 lần khóa rồi mở
+        wd, sleeps, sent, launched = self._launch_setup([True, True, True, True, True], delay_sec=45)
+        wd.on_start(background=False)
+        self.assertIn("🔒 Máy đang khóa. Sẽ mở 1 ứng dụng sau khi mở khóa và chờ thêm 45 giây.", sent[0])
+        self.assertEqual(sleeps, [2, 2, 2, 45])            # chờ mở khóa (mỗi 2 giây), rồi chờ ổn định
+        self.assertEqual(len(launched()), 1)
+        self.assertIn("🚀 Mở ứng dụng (sau khi mở khóa", sent[1])
+
+    def test_launch_not_before_unlock(self):
+        wd, sleeps, sent, launched = self._launch_setup([True] * 50, delay_sec=10)
+        calls = []
+        wd.sleep = lambda sec: calls.append(len(launched())) or False
+        wd.on_start(background=False)
+        self.assertEqual(set(calls), {0})                  # suốt lúc chờ chưa mở ứng dụng nào
+        self.assertEqual(len(launched()), 1)
+
+    def test_launch_delay_after_boot_even_if_unlocked(self):
+        wd, sleeps, sent, launched = self._launch_setup([], uptime=40.0, delay_sec=60)
+        wd.on_start(background=False)
+        self.assertIn("⏳ Sẽ mở 1 ứng dụng sau 60 giây", sent[0])
+        self.assertEqual(sleeps, [60])
+        self.assertEqual(len(launched()), 1)
+
+    def test_launch_immediately_when_unlocked_and_long_uptime(self):
+        wd, sleeps, sent, launched = self._launch_setup([], uptime=7200.0, delay_sec=60)
+        wd.on_start(background=False)
+        self.assertEqual(sleeps, [])
+        self.assertEqual(len(launched()), 1)
+
+    def test_launch_ignores_lock_when_disabled_and_unlock_timeout(self):
+        wd, sleeps, sent, launched = self._launch_setup([True] * 9, wait_unlock=False, delay_sec=0)
+        wd.on_start(background=False)
+        self.assertEqual((sleeps, len(launched())), ([], 1))
+        nw.time.time, real = (lambda t=iter(range(0, 10**6, 40)): next(t)), nw.time.time
+        self.addCleanup(setattr, nw.time, "time", real)
+        wd, sleeps, sent, launched = self._launch_setup([True] * 999, unlock_timeout_min=1, delay_sec=0)
+        wd.on_start(background=False)
+        self.assertEqual(len(launched()), 1)
+        self.assertIn("máy vẫn khóa sau", sent[-1])
+
+    def test_stop_while_waiting_does_not_launch(self):
+        wd, sleeps, sent, launched = self._launch_setup([True] * 9, delay_sec=5)
+        wd.sleep = lambda sec: True                        # dịch vụ được yêu cầu dừng
+        wd.on_start(background=False)
+        self.assertEqual(launched(), [])
 
     def test_online_report_after_outage(self):
         net = FakeNet()

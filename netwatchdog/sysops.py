@@ -151,7 +151,41 @@ def uptime_sec():
     return time.time() - psutil.boot_time() if psutil else 0.0
 
 
-def reboot(delay_sec=60, message="NetWatchdog: khởi động lại do mất mạng"):
+def session_locked():
+    """True nếu phiên Windows hiện tại đang khóa (màn hình khóa, kể cả khi Windows tự đăng nhập lại sau khi
+    khởi động rồi khóa ngay), False nếu đang mở, None nếu không xác định được."""
+    if not IS_WIN:
+        return False
+    try:  # cờ khóa của phiên do Windows quản lý (WTSSessionInfoEx)
+        wts = ctypes.WinDLL("wtsapi32")
+        wts.WTSQuerySessionInformationW.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int,
+                                                    ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_ulong)]
+        wts.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+        buf, size = ctypes.c_void_p(), ctypes.c_ulong()
+        if wts.WTSQuerySessionInformationW(None, 0xFFFFFFFF, 25, ctypes.byref(buf), ctypes.byref(size)) and buf.value:
+            try:
+                # WTSINFOEXW: Level (DWORD) @0, rồi WTSINFOEX_LEVEL1_W @8: SessionId, SessionState, SessionFlags @16
+                level = ctypes.c_ulong.from_address(buf.value).value
+                flags = ctypes.c_long.from_address(buf.value + 16).value
+            finally:
+                wts.WTSFreeMemory(buf)
+            if level == 1 and flags in (0, 1):  # WTS_SESSIONSTATE_LOCK = 0, WTS_SESSIONSTATE_UNLOCK = 1
+                return flags == 0
+    except (OSError, AttributeError, ValueError):
+        pass
+    try:  # dự phòng: khi khóa, màn hình nhận phím/chuột là màn hình Winlogon nên không mở được
+        user32 = ctypes.WinDLL("user32")
+        user32.OpenInputDesktop.restype = ctypes.c_void_p
+        desk = user32.OpenInputDesktop(0, False, 0x0001)
+        if not desk:
+            return True
+        user32.CloseDesktop(ctypes.c_void_p(desk))
+        return False
+    except (OSError, AttributeError):
+        return None
+
+
+def reboot(delay_sec=60,message="NetWatchdog: khởi động lại do mất mạng"):
     if DRY_RUN:
         return _dry(f"khởi động lại máy sau {delay_sec}s")
     code, out = run(["shutdown", "/r", "/f", "/t", str(int(delay_sec)), "/c", message[:500]])
