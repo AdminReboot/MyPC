@@ -82,6 +82,12 @@ DEFAULT_CONFIG = {
     },
     "apps": [],                      # [{"path": "...", "args": "", "workdir": "", "skip_if_running": true}]
     "launch_apps": "after_reboot",   # "after_reboot" | "every_start" | "never"
+    "launch": {
+        "wait_unlock": True,         # máy đang khóa thì chờ mở khóa rồi mới mở ứng dụng
+        "delay_sec": 60,             # sau khi mở khóa / vừa bật máy: chờ các chương trình khác chạy ổn định
+        "unlock_timeout_min": 0,     # chờ mở khóa tối đa (0 = chờ đến khi mở khóa)
+        "boot_window_min": 10,       # máy bật chưa quá số phút này thì coi là "vừa khởi động" (áp dụng delay_sec)
+    },
     "report": {"heartbeat_min": 360, "public_ip": True},
     "jxtd": jxtd.DEFAULT_CONFIG,     # theo dõi nhân vật jxtdAuto (xem jxtd.py)
 }
@@ -329,6 +335,8 @@ def status_report(cfg, state, online=None, detail=""):
     lines.append(f"🔁 Reboot do mất mạng (24h): {n_reboot}")
     if state.get("last_outage"):
         lines.append(f"📉 Lần mất mạng gần nhất: {state.get('last_outage')}")
+    if sysops.session_locked():
+        lines.append("🔒 Màn hình đang khóa")
     jx = (state.get("jxtd") or {}).get("summary")
     if cfg["jxtd"].get("enabled") and jx:
         lines.append(f"🎮 jxtdAuto: {jx}")
@@ -369,19 +377,67 @@ class Watchdog:
         return self.stop_event.wait(sec)
 
     # ------------------------------------------------ Khởi động
-    def on_start(self):
+    def on_start(self, background=True):
         cfg = self.cfg
         msg = [f"🟢 NetWatchdog {__version__} đã chạy trên {machine_name(cfg)}"]
         mode = cfg.get("launch_apps", "after_reboot")
+        launch = False
         if self.state.get("pending_launch"):
             msg.append(f"🔁 Máy vừa được khởi động lại vì: {self.state.get('reboot_reason') or 'mất mạng'}")
-            if mode != "never":
-                msg.append(self.launch_apps())
+            launch = mode != "never"
             self.state.set(pending_launch=False)
             self.last_fix = "khởi động lại máy"
         elif mode == "every_start":
-            msg.append(self.launch_apps())
-        self.tg.send("\n".join(m for m in msg if m))
+            launch = True
+        apps = [a for a in cfg.get("apps") or [] if a.get("path")]
+        if not (launch and apps):
+            self.tg.send("\n".join(msg))
+            return
+        # Mở ứng dụng ở luồng riêng: có thể phải chờ mở khóa lâu, trong lúc đó vẫn theo dõi mạng bình thường
+        locked, wait = self.launch_plan()
+        if locked:
+            msg.append(f"🔒 Máy đang khóa. Sẽ mở {len(apps)} ứng dụng sau khi mở khóa"
+                       + (f" và chờ thêm {wait} giây." if wait else "."))
+        elif wait:
+            msg.append(f"⏳ Sẽ mở {len(apps)} ứng dụng sau {wait} giây (chờ máy ổn định).")
+        self.tg.send("\n".join(msg))
+        if background:
+            threading.Thread(target=self.launch_when_ready, daemon=True, name="launch-apps").start()
+        else:
+            self.launch_when_ready()
+
+    def launch_plan(self):
+        """(máy đang khóa và cần chờ?, số giây chờ ổn định sẽ áp dụng)."""
+        L = self.cfg["launch"]
+        locked = bool(L.get("wait_unlock", True) and sysops.session_locked())
+        just_booted = sysops.uptime_sec() < L.get("boot_window_min", 10) * 60
+        return locked, int(L.get("delay_sec", 0)) if (locked or just_booted) else 0
+
+    def launch_when_ready(self):
+        """Chờ mở khóa (nếu đang khóa) → chờ máy ổn định → mở các ứng dụng đã chọn và báo kết quả."""
+        L = self.cfg["launch"]
+        locked, wait = self.launch_plan()
+        note = ""
+        if locked:
+            t0 = time.time()
+            limit = L.get("unlock_timeout_min", 0) * 60
+            log.info("Máy đang khóa: chờ mở khóa rồi mới mở ứng dụng")
+            while sysops.session_locked():
+                if self.sleep(2):
+                    return
+                if limit and time.time() - t0 >= limit:
+                    note = f" (máy vẫn khóa sau {fmt_duration(limit)}, mở luôn)"
+                    break
+            else:
+                note = f" (sau khi mở khóa, đã chờ {fmt_duration(time.time() - t0)})"
+            log.info("Tiếp tục mở ứng dụng%s", note)
+        if wait:
+            log.info("Chờ %d giây cho máy ổn định rồi mở ứng dụng", wait)
+            if self.sleep(wait):
+                return
+        res = self.launch_apps()
+        if res:
+            self.tg.send(res.replace("🚀 Mở ứng dụng:", f"🚀 Mở ứng dụng{note}:", 1))
 
     def launch_apps(self):
         apps = [a for a in self.cfg.get("apps") or [] if a.get("path")]

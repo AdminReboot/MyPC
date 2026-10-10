@@ -30,6 +30,12 @@
   },
   "apps": [],
   "launch_apps": "after_reboot",
+  "launch": {
+    "wait_unlock": true,
+    "delay_sec": 60,
+    "unlock_timeout_min": 0,
+    "boot_window_min": 10
+  },
   "report": {
     "heartbeat_min": 360,
     "public_ip": true

@@ -34,12 +34,22 @@ Khi có bản mới, trang **Tổng quan** hiện thông báo **"Có phiên bả
 
 **Settings → Apps → Installed apps → NetWatchdog → Uninstall**. Tác vụ chạy nền được xóa; thư mục `%LOCALAPPDATA%\NetWatchdog` (cấu hình, log) được giữ lại, muốn xóa hẳn thì xóa tay.
 
-### ⚠️ Bắt buộc để mở được ứng dụng sau khi khởi động lại
+### Mở ứng dụng sau khi khởi động lại: khóa màn hình và thời gian chờ
 
-NetWatchdog chạy khi bạn **đăng nhập**, nên máy phải **tự đăng nhập Windows** sau khi khởi động lại:
+NetWatchdog chạy khi Windows **đăng nhập** xong. Sau khi khởi động lại, Windows 10/11 thường tự đăng nhập lại tài khoản rồi **khóa màn hình ngay**, và các chương trình khởi động cùng máy còn đang chạy lên. Vì vậy NetWatchdog không mở ứng dụng ngay mà làm theo thứ tự:
 
-- Cách 1: dùng [Sysinternals Autologon](https://learn.microsoft.com/sysinternals/downloads/autologon) của Microsoft (mật khẩu được lưu mã hóa).
+1. Nếu màn hình đang khóa: báo lên Telegram "🔒 Máy đang khóa…" và **chờ đến khi bạn mở khóa**.
+2. Chờ thêm một khoảng cho máy ổn định (mặc định 60 giây; cũng áp dụng khi máy vừa bật dưới 10 phút dù không khóa).
+3. Mở các ứng dụng đã chọn và báo kết quả.
+
+Chỉnh ở trang **Khởi động lại & Ứng dụng**: "Chờ mở khóa màn hình" và "Chờ máy ổn định". Lệnh `/apps` trên Telegram mở ứng dụng ngay, không chờ. `/status` có dòng "🔒 Màn hình đang khóa" khi máy đang khóa.
+
+NetWatchdog **không tự mở khóa** được: Windows không cho chương trình nào mở khóa nếu không có mật khẩu. Muốn máy tự vào thẳng màn hình làm việc (không cần ai mở khóa) thì bật tự đăng nhập của Windows:
+
+- Cách 1: dùng [Sysinternals Autologon](https://learn.microsoft.com/sysinternals/downloads/autologon) của Microsoft (mật khẩu được lưu mã hóa trên máy).
 - Cách 2: `Win+R` → `netplwiz` → bỏ tick *"Users must enter a user name and password…"*. Trên Windows 11, nếu không thấy ô này, hãy tắt *Settings → Accounts → Sign-in options → "For improved security, only allow Windows Hello sign-in…"*.
+
+Lưu ý: bật tự đăng nhập nghĩa là ai bật máy cũng vào được tài khoản của bạn.
 
 ## Lệnh Telegram
 
