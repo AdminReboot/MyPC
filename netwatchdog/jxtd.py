@@ -308,7 +308,26 @@ EXTRA_COLUMNS = [
 EXTRA_KNOWN = [c for line in EXTRA_COLUMNS for c in line]
 HIDDEN_COLUMNS = {"Ẩn"}  # cột không mang thông tin theo dõi (cửa sổ game đang ẩn)
 # Thứ tự cột thêm trong CSV: chỉ được NỐI THÊM vào cuối để file cũ vẫn đọc đúng theo vị trí
-CSV_EXTRA = ["o_trong", "ve_mt", "nv_mt", "nang_dong", "xu_kim_dinh", "han_phu", "exp_tich_luy"]
+CSV_EXTRA = ["o_trong", "ve_mt", "nv_mt", "nang_dong", "xu_kim_dinh", "han_phu", "exp_tich_luy", "ban_do"]
+
+
+MAP_COLUMN = "Bản đồ"
+
+
+def parse_map(text):
+    """"<Trường Bạch Sơn Bắc 1, 214, 197>" -> ("Trường Bạch Sơn Bắc 1", "214, 197"); không có bản đồ -> ("", "")."""
+    parts = [x.strip() for x in (text or "").strip().strip("<>").split(",")]
+    coords = []
+    while len(parts) > 1 and len(coords) < 2 and parts[-1].lstrip("-").isdigit():
+        coords.insert(0, parts.pop())
+    name = ", ".join(x for x in parts if x)
+    return ("", "") if name in ("", "-") else (name, ", ".join(coords))
+
+
+def fmt_map(text):
+    """Bản đồ để hiển thị: "Trường Bạch Sơn Bắc 1 (214, 197)"; "" nếu không có."""
+    name, coords = parse_map(text)
+    return name + (f" ({coords})" if name and coords else "")
 
 
 def fmt_row(r):
@@ -317,13 +336,16 @@ def fmt_row(r):
              f"   {r.task or '?'}" + (f" · {r.exp}" if r.exp else ""),
              f"   💰 {r.income or '?'} · NL {r.money or '?'}",
              f"   📈 {r.level or '?'} · Phù/chết {r.deaths or '?'}"]
+    where = fmt_map(r.extra.get(MAP_COLUMN))
+    if where:
+        lines.insert(2, f"   📍 {where}")  # ngay dưới dòng tác vụ: đang làm gì, ở đâu
     if r.card:
         lines.append(f"   🎫 Thẻ tháng {r.card}")
     for group in EXTRA_COLUMNS:
         parts = [f"{label} {r.extra[col]}" for col, label, _ in group if r.extra.get(col)]
         if parts:
             lines.append("   " + " · ".join(parts))
-    known = {col for col, _, _ in EXTRA_KNOWN} | HIDDEN_COLUMNS
+    known = {col for col, _, _ in EXTRA_KNOWN} | HIDDEN_COLUMNS | {MAP_COLUMN}
     lines += [f"   • {col}: {val}" for col, val in r.extra.items() if col not in known and val]  # cột chưa biết
     return "\n".join(lines)
 
@@ -378,8 +400,9 @@ def build_short(cfg, snap, missing=()):
     if snap.license_days is not None:
         lines[0] += f" · license {snap.license_days} ngày"
     for r in snap.rows:
+        where = parse_map(r.extra.get(MAP_COLUMN))[0]
         lines.append(" · ".join(x for x in (f"{'✅' if r.checked else '⬜'} {r.name}", r.task or "?", r.exp_text,
-                                            r.income or "?") if x))
+                                            r.income or "?", f"📍 {where}" if where else "") if x))
     if missing:
         lines.append("❓ Mất khỏi danh sách: " + ", ".join(missing))
     return "\n".join(lines)
@@ -443,7 +466,7 @@ def day_summary(cfg, folder, day=None):
         c = chars.get(name)
         if c is None:
             chars[name] = c = {"first": d, "tasks": 0, "deaths": 0, "lv_first": "", "lv_last": "",
-                               "nl_first": "", "nl_last": ""}
+                               "nl_first": "", "nl_last": "", "maps": {}}
         else:
             if task_key(d.get("tac_vu")) != task_key(c["last"].get("tac_vu")):
                 c["tasks"] += 1
@@ -457,6 +480,9 @@ def day_summary(cfg, folder, day=None):
         if d.get("ngan_luong"):
             c["nl_first"] = c["nl_first"] or d["ngan_luong"]
             c["nl_last"] = d["ngan_luong"]
+        where = parse_map(d.get("ban_do"))[0]
+        if where:
+            c["maps"][where] = c["maps"].get(where, 0) + 1  # số lần đọc thấy ở bản đồ này
 
     t0, t1 = data[0]["thoi_gian"][11:16], data[-1]["thoi_gian"][11:16]
     head = f"📅 jxtdAuto ngày {day:%d/%m} ({t0} → {t1})"
@@ -465,6 +491,7 @@ def day_summary(cfg, folder, day=None):
     if gaps:
         poll = cfg.get("jxtd", {}).get("poll_sec", 60)
         lines.append(f"🔴 Không thấy jxtdAuto ≈ {fmt_duration(gaps * poll)}")
+    poll = cfg.get("jxtd", {}).get("poll_sec", 60)
     for n, c in chars.items():
         b = c["last"]
         la, lb = _level(c["lv_first"]), _level(c["lv_last"])
@@ -483,6 +510,11 @@ def day_summary(cfg, folder, day=None):
                   f"   🏦 NL {c['nl_first'] or '?'} → {c['nl_last'] or '?'}{diff}",
                   f"   💰 Thu nhập (jxtdAuto): {b.get('thu_nhap') or '?'}",
                   f"   💀 chết {c['deaths']} · 🔄 đổi tác vụ {c['tasks']} · đang: {b.get('tac_vu') or '?'}"]
+        if c["maps"]:  # tối đa 4 bản đồ ở lâu nhất, thời gian ≈ số lần đọc × chu kỳ đọc
+            top = sorted(c["maps"].items(), key=lambda kv: -kv[1])[:4]
+            more = len(c["maps"]) - len(top)
+            lines.append("   📍 " + " · ".join(f"{m} {k * poll / 3600:.1f}h" for m, k in top)
+                         + (f" · +{more} nơi khác" if more else ""))
     return "\n".join(lines)
 
 
@@ -794,7 +826,7 @@ def capture_png(J):
 # ---------------------------------------------------------------- Lịch sử CSV
 CSV_FIELDS = ["thoi_gian", "nhan_vat", "tick", "dang_chon", "tac_vu", "exp_gio", "thu_nhap",
               "ngan_luong", "cap_exp", "phu_chet", "the_thang", "ghi_chu"] + CSV_EXTRA
-EXTRA_BY_CSV = {c: col for col, _, c in EXTRA_KNOWN}
+EXTRA_BY_CSV = dict({c: col for col, _, c in EXTRA_KNOWN}, ban_do=MAP_COLUMN)
 NOTE_COL = CSV_FIELDS.index("ghi_chu")
 
 

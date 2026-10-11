@@ -68,9 +68,9 @@ Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình. Gửi `/start` ho�
 | `/fix` | Chạy quy trình khôi phục mạng ngay |
 | `/reboot yes` | Khởi động lại máy sau 30 giây |
 | `/cancel` | Hủy lệnh khởi động lại đang chờ |
-| `/jx` | Bảng nhân vật jxtdAuto lúc này (khi đã bật theo dõi). `/jx vut`: chỉ nhân vật có tên chứa "vut", không cần gõ dấu. Hiện cả các cột bật thêm trong jxtdAuto: ô trống, vé MT, nhiệm vụ MT, năng động, xu/kim đỉnh, hạn phù |
-| `/jx_gon` | jxtdAuto rút gọn, mỗi nhân vật một dòng: tick · tác vụ · EXP/giờ · thu nhập |
-| `/jx_homnay` | Tổng kết jxtdAuto trong ngày: EXP/cấp tăng, thu nhập và ngân lượng đầu ngày → hiện tại, số lần chết, số lần đổi tác vụ, thời gian không thấy jxtdAuto |
+| `/jx` | Bảng nhân vật jxtdAuto lúc này (khi đã bật theo dõi). `/jx vut`: chỉ nhân vật có tên chứa "vut", không cần gõ dấu. Hiện cả các cột bật thêm trong jxtdAuto: bản đồ đang đứng (📍 tên bản đồ và tọa độ), ô trống, vé MT, nhiệm vụ MT, năng động, xu/kim đỉnh, hạn phù |
+| `/jx_gon` | jxtdAuto rút gọn, mỗi nhân vật một dòng: tick · tác vụ · EXP/giờ · thu nhập · bản đồ |
+| `/jx_homnay` | Tổng kết jxtdAuto trong ngày: EXP/cấp tăng, thu nhập và ngân lượng đầu ngày → hiện tại, số lần chết, số lần đổi tác vụ, các bản đồ đã ở trong ngày (kèm thời gian), thời gian không thấy jxtdAuto |
 | `/jx_gio` | EXP và tiền vạn kiếm được **theo giờ** hôm nay. Bên dưới có nút chọn **tất cả** hoặc **từng nhân vật** và nút chuyển sang theo ngày (bấm là sửa ngay tin đó). Gõ `/jx_gio vut, buff` để gộp nhiều nhân vật |
 | `/jx_ngay` | EXP và tiền vạn **theo ngày**, 7 ngày gần nhất (`/jx_ngay 30`: 30 ngày), có nút chọn nhân vật như trên |
 | `/jx_nv` | Danh sách nhân vật dạng nút bấm: bấm tên để xem chi tiết, kèm nút xem theo giờ / theo ngày của riêng nhân vật đó |
