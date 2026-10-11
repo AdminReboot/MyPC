@@ -465,6 +465,39 @@ class StatsTest(unittest.TestCase):
         self.assertEqual((recs[1]["o_trong"], recs[1]["han_phu"], recs[1]["exp_tich_luy"]), ("33 / 27", "- / 8d / -", "2.0m"))
         self.assertEqual(recs[0]["exp_tich_luy"], "")
 
+    def test_map_column(self):
+        """jxtdAuto 0.4.6: cột "Bản đồ" dạng "<Tên, x, y>" (giá trị có dấu phẩy, là cột cuối)."""
+        from datetime import datetime, timedelta
+        self.assertEqual(jxtd.parse_map("<Trường Bạch Sơn Bắc 1, 214, 197>"), ("Trường Bạch Sơn Bắc 1", "214, 197"))
+        self.assertEqual(jxtd.parse_map("<Lưu Tiên Động Tầng 4, 199, 195>")[0], "Lưu Tiên Động Tầng 4")
+        self.assertEqual(jxtd.parse_map("<Ba Lăng Huyện>"), ("Ba Lăng Huyện", ""))
+        self.assertEqual(jxtd.parse_map("<Thôn A, B, 10, 20>"), ("Thôn A, B", "10, 20"))
+        for empty in ("", "-", "<>", "<, 0, 0>", None):
+            self.assertEqual(jxtd.parse_map(empty)[0], "", empty)
+        headers = ["Tên nhân vật", "Tác vụ", "Ẩn", "Ngân lượng", "Cấp/EXP", "EXP/giờ", "Thu nhập", "Bản đồ"]
+
+        def mk(name, where):
+            desc = ("Tác vụ: Luyện công, Ẩn: x, Ngân lượng: 486.2 vạn, Cấp/EXP: Lv109 (70.7%), EXP/giờ: 2.3m/h, "
+                    f"Thu nhập: -1.4 vạn, Bản đồ: {where}")
+            return jxtd.make_row(name, desc, 0x10, headers)
+        r = mk("[0]A", "<Trường Bạch Sơn Bắc 1, 214, 197>")
+        lines = jxtd.fmt_row(r).splitlines()
+        self.assertEqual(lines[1:3], ["   Luyện công · 2.3m/h", "   📍 Trường Bạch Sơn Bắc 1 (214, 197)"])
+        self.assertNotIn("• Bản đồ", jxtd.fmt_row(r))                 # không lặp lại dạng thô
+        self.assertNotIn("📍", jxtd.fmt_row(mk("[0]A", "-")))
+        short = jxtd.build_short(self.cfg, jxtd.Snapshot(ts=0, found=True, rows=[r]))
+        self.assertTrue(short.endswith("· -1.4 vạn · 📍 Trường Bạch Sơn Bắc 1"))
+        # lưu CSV và tổng kết ngày: 3 lần đọc ở bãi 1, 1 lần ở bãi 2
+        h, t0 = os.path.join(self.tmp, "m"), datetime(2026, 10, 11, 9, 0)
+        for i, where in enumerate(["<Trường Bạch Sơn Bắc 1, 214, 197>"] * 3 + ["<Lưu Tiên Động Tầng 4, 199, 195>"]):
+            self._write(h, t0 + timedelta(minutes=i), [mk("[0]A", where)])
+        recs = jxtd.read_csv(os.path.join(h, "2026-10-11.csv"))
+        self.assertEqual(recs[0]["ban_do"], "<Trường Bạch Sơn Bắc 1, 214, 197>")
+        self.assertEqual(recs[0]["ngan_luong"], "486.2 vạn")
+        cfg = nw.deep_merge(self.cfg, {"jxtd": {"poll_sec": 3600}})   # mỗi lần đọc = 1 giờ cho dễ kiểm
+        self.assertIn("📍 Trường Bạch Sơn Bắc 1 3.0h · Lưu Tiên Động Tầng 4 1.0h", jxtd.day_summary(cfg, h, t0))
+        self.assertAlmostEqual(jxtd.compute_stats(jxtd.load_history(h, t0.date(), t0.date()))["total_exp"], 2.3e6 * 3 / 60)
+
     def test_telegram_buttons_and_callbacks(self):
         cfg_path = os.path.join(self.tmp, "cfg.json")
         nw.save_json(cfg_path, self.cfg)
