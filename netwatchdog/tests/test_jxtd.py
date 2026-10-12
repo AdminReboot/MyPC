@@ -193,6 +193,52 @@ class MonitorTest(unittest.TestCase):
         msgs = self.tick()
         self.assertTrue(any("bỏ tick" in m for m in msgs))
 
+    def _at(self, name, where, task="Luyện công", checked=True):
+        headers = HEADERS + ["Bản đồ"]
+        desc = (f"Tác vụ: {task}, EXP/giờ: 1.8m/h, Thu nhập: 13.0 vạn, Ngân lượng: 225.0 vạn, "
+                f"Cấp/EXP: Lv109 (39.6%), Phù/chết: 3 / 0, Thẻ tháng: 359h / 359h, Bản đồ: {where}")
+        return jxtd.make_row(name, desc, 0x10 if checked else 0, headers)
+
+    def test_is_town(self):
+        J = self.cfg["jxtd"]
+        for name in ("Ba Lăng Huyện", "Giang Tân Thôn", "Vĩnh Lạc Trấn", "Dương Châu", "Thành Đô", "Đại Lý Phủ"):
+            self.assertTrue(jxtd.is_town(name, J), name)
+        for name in ("Trường Bạch Sơn Bắc 1", "Lưu Tiên Động Tầng 4", "Phong Lăng Độ", "Kiếm Các Thục Đạo", ""):
+            self.assertFalse(jxtd.is_town(name, J), name)
+
+    def test_stuck_in_town_alerts_after_10_min(self):
+        self.reader.rows[0] = self._at("[0]A", "<Trường Bạch Sơn Bắc 1, 214, 197>")
+        self.assertEqual(self.tick(), [])
+        self.reader.rows[0] = self._at("[0]A", "<Ba Lăng Huyện, 200, 199>")
+        for _ in range(10):                            # phút 0..9 trong thành: chưa báo
+            self.assertEqual(self.tick(), [])
+        m = self.tick()[0]
+        self.assertIn("🏘 [0]A kẹt trong thành/thôn (10 phút)", m)
+        self.assertIn("📍 Ba Lăng Huyện · Luyện công", m)
+        self.reader.rows[0] = self._at("[0]A", "<Giang Tân Thôn, 10, 20>")   # sang thôn khác vẫn là kẹt
+        self.assertEqual(self.tick(), [])
+        self.assertIn("Vẫn còn", self.tick(30)[0])
+        self.reader.rows[0] = self._at("[0]A", "<Trường Bạch Sơn Bắc 1, 214, 197>")
+        self.assertIn("🟢 [0]A đã rời Giang Tân Thôn: đang ở Trường Bạch Sơn Bắc 1", self.tick()[0])
+
+    def test_short_town_visit_and_exempt_task_are_silent(self):
+        self.tick()
+        for where in ["<Ba Lăng Huyện, 1, 2>"] * 6 + ["<Trường Bạch Sơn Bắc 1, 1, 2>"] + ["<Ba Lăng Huyện, 1, 2>"] * 6:
+            self.reader.rows[0] = self._at("[0]A", where)          # 6 phút trong thành, ra bãi, lại 6 phút
+            self.assertEqual(self.tick(), [])
+        self.reader.rows[0] = self._at("[0]A", "<Dương Châu, 1, 2>", task="Bán hàng")
+        for _ in range(15):
+            self.assertEqual(self.tick(), [])
+
+    def test_town_alert_not_duplicated_with_stuck_alert(self):
+        self.tick()
+        self.reader.rows[0] = self._at("[0]A", "<Ba Lăng Huyện, 1, 2>", task="Lỗi: Kiểm tra đầy hành trang")
+        msgs = []
+        for _ in range(14):
+            msgs += self.tick()
+        self.assertEqual(len(msgs), 1)                 # chỉ có cảnh báo "đứng chơi", không thêm tin kẹt thành
+        self.assertIn("🚨 [0]A đang đứng chơi", msgs[0])
+
     def test_extra_columns_shown(self):
         headers = HEADERS + ["N. động", "Xu/Kim đỉnh", "Ô trống", "Vé MT", "Hạn phù", "Nhiệm vụ MT", "Cột lạ"]
         desc = ("Tác vụ: Luyện công, EXP/giờ: 1.5m/h, Thu nhập: 13.3 vạn, Ngân lượng: 427.4 vạn, "

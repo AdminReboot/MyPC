@@ -911,6 +911,10 @@ class SettingsApp(tk.Tk):
                     "jx_stuck", J.get("stuck", True))
         self.number(card, "Không làm gì quá", "Mất kết nối, Treo, không có tác vụ… kéo dài quá mức này mới báo.",
                     "jx_idle", J.get("idle_min", 5), "phút")
+        self.toggle(card, "Nhân vật kẹt trong thành / thôn",
+                    "Theo cột “Bản đồ” của jxtdAuto: ở liên tục trong thành, thôn, trấn quá lâu.",
+                    "jx_town", J.get("town", True))
+        self.number(card, "Ở trong thành / thôn quá", None, "jx_town_min", J.get("town_min", 10), "phút")
         self.toggle(card, "Nhân vật chết", "Số sau dấu “/” ở cột Phù/chết tăng.", "jx_death", J.get("death", True))
         self.toggle(card, "Thẻ tháng sắp hết / đã hết", None, "jx_card", J.get("month_card", True))
         self.number(card, "Ngưỡng thẻ tháng", "Báo “sắp hết” khi số giờ còn lại ≤ ngưỡng này.", "jx_card_h",
@@ -1563,6 +1567,8 @@ class SettingsApp(tk.Tk):
             negative_income=self.vars["jx_neg"].get(),
             stuck=self.vars["jx_stuck"].get(),
             idle_min=max(1, self._int("jx_idle", 5)),
+            town=self.vars["jx_town"].get(),
+            town_min=max(1, self._int("jx_town_min", 10)),
             death=self.vars["jx_death"].get(),
             month_card=self.vars["jx_card"].get(),
             month_card_warn_hours=self._int("jx_card_h", 24),
