@@ -77,6 +77,25 @@
       "Đang vào game",
       "Đăng nhập"
     ],
+    "town": true,
+    "town_min": 10,
+    "town_keywords": [
+      "Thôn",
+      "Trấn",
+      "Huyện",
+      "Phủ",
+      "Ba Lăng",
+      "Dương Châu",
+      "Biện Kinh",
+      "Phượng Tường",
+      "Thành Đô",
+      "Đại Lý",
+      "Tương Dương",
+      "Lâm An"
+    ],
+    "town_ok_tasks": [
+      "Bán hàng"
+    ],
     "death": true,
     "month_card": true,
     "month_card_warn_hours": 24,

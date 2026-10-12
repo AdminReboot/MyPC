@@ -48,6 +48,12 @@ DEFAULT_CONFIG = {
     "danger_keywords": ["Lỗi", "Nghỉ", "Đầy hành trang"],
     "idle_exact": ["", "-", "Không", "Hoàn thành"],
     "idle_keywords": ["Treo", "Mất kết nối", "Đang vào game", "Đăng nhập"],
+    "town": True,                  # nhân vật kẹt trong thành / thôn (theo cột Bản đồ)
+    "town_min": 10,                # ở liên tục trong thành/thôn quá số phút này thì báo
+    # bản đồ là thành/thôn nếu tên có một trong các từ này (khớp nguyên từ, có dấu)
+    "town_keywords": ["Thôn", "Trấn", "Huyện", "Phủ", "Ba Lăng", "Dương Châu", "Biện Kinh", "Phượng Tường",
+                      "Thành Đô", "Đại Lý", "Tương Dương", "Lâm An"],
+    "town_ok_tasks": ["Bán hàng"],  # tác vụ vốn làm trong thành: không báo
     "death": True,
     "month_card": True,
     "month_card_warn_hours": 24,
@@ -178,20 +184,30 @@ def task_key(task):
     return TASK_PROGRESS_RE.sub("", task or "")
 
 
+def fold(x):
+    """Chuẩn hóa để so từ khóa: giữ dấu ("Lỗi" khác "lợi"), chỉ bỏ phân biệt hoa/thường."""
+    return unicodedata.normalize("NFC", x or "").casefold().strip()
+
+
+def has_word(keys, text):
+    """`text` (đã fold) có chứa nguyên từ/cụm từ nào trong `keys` không."""
+    return any(re.search(r"(?<!\w)" + re.escape(fold(k)) + r"(?!\w)", text) for k in keys if k)
+
+
 def task_status(task, J):
     """"danger" (jxtdAuto báo Lỗi/Nghỉ...), "idle" (không làm gì: "-", <Mất kết nối>...) hoặc "ok".
     Tác vụ lạ coi là "ok": đổi nhiệm vụ là chuyện bình thường, chỉ báo khi nhân vật đứng chơi."""
-    def fold(x):  # giữ dấu ("Lỗi" khác "lợi"), chỉ bỏ phân biệt hoa/thường
-        return unicodedata.normalize("NFC", x or "").casefold().strip()
-
-    def has(keys, text):  # khớp nguyên từ
-        return any(re.search(r"(?<!\w)" + re.escape(fold(k)) + r"(?!\w)", text) for k in keys if k)
     t = fold(fold(task).strip("<>"))
-    if has(J["danger_keywords"], t):
+    if has_word(J["danger_keywords"], t):
         return "danger"
-    if t in [fold(k) for k in J["idle_exact"]] or has(J["idle_keywords"], t):
+    if t in [fold(k) for k in J["idle_exact"]] or has_word(J["idle_keywords"], t):
         return "idle"
     return "ok"
+
+
+def is_town(map_name, J):
+    """Bản đồ là thành / thôn / trấn (nơi nhân vật không luyện công) theo danh sách từ khóa `town_keywords`."""
+    return bool(map_name) and has_word(J["town_keywords"], fold(map_name))
 
 
 def make_row(name, desc, state, headers):
@@ -1012,6 +1028,8 @@ class JxMonitor:
                     cd, now=now)
             if J["stuck"]:
                 self._check_stuck(cfg, alerts, c, r, now, cd)
+            if J["town"]:
+                self._check_town(cfg, alerts, c, r, now, cd)
             dc = r.death_count
             if dc is not None:
                 old = c.get("deaths")
@@ -1088,6 +1106,34 @@ class JxMonitor:
             # bị bỏ tick thì không phải "hoạt động lại": để cảnh báo bỏ tick lo, không gửi tin 🟢
             (lambda d: header_line(cfg, "🟢", f"{r.name} hoạt động lại: {r.task} (đứng chơi {fmt_duration(dur)})"))
             if r.checked else "",
+            cd, remind=J["remind_stuck"], now=now)
+
+    def _check_town(self, cfg, alerts, c, r, now, cd):
+        """Nhân vật kẹt trong thành/thôn: ở liên tục trong bản đồ thành/thôn quá `town_min` phút
+        (vd. về thành rồi không ra bãi lại được). Cần jxtdAuto hiện cột "Bản đồ"."""
+        J = cfg["jxtd"]
+        where = parse_map(r.extra.get(MAP_COLUMN))[0]
+        in_town = (r.checked and is_town(where, J)
+                   and not has_word(J["town_ok_tasks"], fold(r.task)))
+        since = c.get("town_since", now)
+        if in_town:
+            c["town_since"], c["town_name"] = since, where
+        else:
+            c.pop("town_since", None)
+        dur = now - since
+        key = f"town:{r.key}"
+        was_active = alerts.st.get(key, {}).get("active", False)
+        # đang có cảnh báo "đứng chơi" (Lỗi/Nghỉ…) cho nhân vật này thì không báo trùng
+        stuck_active = alerts.st.get(f"stuck:{r.key}", {}).get("active", False)
+        active = in_town and (was_active or (dur >= J["town_min"] * 60 and not stuck_active))
+        town = c.get("town_name", "")
+        alerts.update(
+            key, active,
+            lambda: header_line(cfg, "🏘", f"{r.name} kẹt trong thành/thôn ({fmt_duration(dur)})")
+            + f"\n📍 {where} · {r.task or '(không có tác vụ)'}\n\n" + fmt_row(r),
+            # chỉ báo "đã rời" khi thật sự thấy nhân vật ở bản đồ khác (không phải do bỏ tick / mất cột Bản đồ)
+            (lambda d: header_line(cfg, "🟢", f"{r.name} đã rời {town}: đang ở {where} (ở lại {fmt_duration(dur)})"))
+            if r.checked and where and not is_town(where, J) else "",
             cd, remind=J["remind_stuck"], now=now)
 
     def _check_card(self, cfg, alerts, r, now, cd):
