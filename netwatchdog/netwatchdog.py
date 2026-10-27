@@ -30,6 +30,7 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
 import jxtd
+import netquality
 import sysops
 from version import __version__
 
@@ -68,6 +69,7 @@ DEFAULT_CONFIG = {
         "fail_threshold": 3,
         "timeout_sec": 4,
     },
+    "quality": netquality.DEFAULT_CONFIG,   # mạng chậm: đo từng card, tự chuyển card (xem netquality.py)
     "recovery": {
         "wifi_profiles": [],
         "wifi_interface": "",
@@ -337,6 +339,12 @@ def status_report(cfg, state, online=None, detail=""):
         lines.append(f"📉 Lần mất mạng gần nhất: {state.get('last_outage')}")
     if sysops.session_locked():
         lines.append("🔒 Màn hình đang khóa")
+    try:
+        al = sysops.autologon_status()
+        lines.append("🔑 Tự đăng nhập Windows: " + ("bật" if al["enabled"] and al["has_password"] else
+                                                     "TẮT (khởi động lại sẽ dừng ở màn hình đăng nhập)"))
+    except Exception:  # noqa: BLE001
+        pass
     jx = (state.get("jxtd") or {}).get("summary")
     if cfg["jxtd"].get("enabled") and jx:
         lines.append(f"🎮 jxtdAuto: {jx}")
@@ -358,6 +366,7 @@ class Watchdog:
         self.last_heartbeat = time.time()
         self.recovering = threading.Lock()
         self.jx = None
+        self.nq = netquality.QualityMonitor(lambda: self.cfg, self.tg.send)
 
     @property
     def cfg(self):
@@ -462,6 +471,7 @@ class Watchdog:
         if self.cfg["telegram"].get("commands", True):
             threading.Thread(target=self.command_loop, daemon=True, name="tg-commands").start()
         threading.Thread(target=self.jxtd_loop, daemon=True, name="jxtd").start()
+        threading.Thread(target=self.quality_loop, daemon=True, name="net-quality").start()
         fails = 0
         while not self.stop_event.is_set():
             cfg = self.cfg
@@ -498,7 +508,8 @@ class Watchdog:
         hb = self.cfg["report"].get("heartbeat_min") or 0
         if hb and time.time() - self.last_heartbeat >= hb * 60:
             self.last_heartbeat = time.time()
-            self.tg.send("📊 Báo cáo định kỳ\n" + status_report(self.cfg, self.state, True))
+            self.tg.send("📊 Báo cáo định kỳ\n" + status_report(self.cfg, self.state, True)
+                         + ("\n" + self.nq.report() if self.cfg["quality"].get("enabled") else ""))
 
     def wait_online(self, sec):
         deadline = time.time() + sec
@@ -507,6 +518,23 @@ class Watchdog:
             if ok or time.time() >= deadline or self.stop_event.is_set():
                 return ok
             self.sleep(min(3, max(0.1, deadline - time.time())))
+
+    # ------------------------------------------------ Mạng chậm
+    def quality_loop(self):
+        """Đo chất lượng từng card và tự chuyển card khi đường đang dùng bị chậm (luồng riêng, không chặn
+        vòng kiểm tra mất mạng). Khi đang mất mạng hẳn thì để quy trình khôi phục lo."""
+        while not self.stop_event.is_set():
+            Q = self.cfg["quality"]
+            if Q.get("enabled") and self.online is not False and not self.recovering.locked():
+                try:
+                    self.nq.tick()
+                except Exception:  # noqa: BLE001
+                    log.exception("Lỗi khi đo chất lượng mạng")
+            self.sleep(max(15, Q.get("interval_sec", 60)))
+
+    def full_status(self):
+        report = status_report(self.cfg, self.state)
+        return report + ("\n" + self.nq.report() if self.cfg["quality"].get("enabled") else "")
 
     # ------------------------------------------------ jxtdAuto
     def jxtd_loop(self):
@@ -612,6 +640,7 @@ class Watchdog:
     # ------------------------------------------------ Lệnh Telegram
     HELP = ("Lệnh NetWatchdog (hoặc bấm các nút bên dưới khung chat):\n"
             "/status — tình trạng máy\n"
+            "/net — chất lượng từng card mạng · /net <tên card> — ưu tiên card đó (vd. /net wi-fi 3)\n"
             "/apps — mở các ứng dụng đã chọn\n"
             "/fix — chạy quy trình khôi phục mạng ngay\n"
             "/reboot yes — khởi động lại máy\n"
@@ -629,12 +658,12 @@ class Watchdog:
     # Bàn phím nút bấm cố định dưới khung chat: chữ trên nút -> lệnh
     KEYBOARD = [[("🎮 Bảng JX", "/jx"), ("📋 JX gọn", "/jx_gon"), ("📸 Ảnh JX", "/jx_anh")],
                 [("📊 Theo giờ", "/jx_gio"), ("📈 Theo ngày", "/jx_ngay"), ("📅 Hôm nay", "/jx_homnay")],
-                [("👤 Nhân vật", "/jx_nv"), ("🖥 Tình trạng", "/status"), ("❓ Trợ giúp", "/help")]]
+                [("👤 Nhân vật", "/jx_nv"), ("🖥 Tình trạng", "/status"), ("📶 Mạng", "/net"), ("❓ Trợ giúp", "/help")]]
     BUTTONS = {label: cmd for row in KEYBOARD for label, cmd in row}
     BOT_COMMANDS = [("jx", "Bảng nhân vật jxtdAuto"), ("jx_gon", "jxtdAuto rút gọn"),
                     ("jx_gio", "EXP & tiền vạn theo giờ"), ("jx_ngay", "EXP & tiền vạn theo ngày"),
                     ("jx_homnay", "Tổng kết jxtdAuto hôm nay"), ("jx_nv", "Chọn nhân vật"),
-                    ("jx_anh", "Ảnh chụp cửa sổ jxtdAuto"), ("status", "Tình trạng máy"),
+                    ("jx_anh", "Ảnh chụp cửa sổ jxtdAuto"), ("status", "Tình trạng máy"), ("net", "Chất lượng từng card mạng"),
                     ("apps", "Mở các ứng dụng đã chọn"), ("fix", "Khôi phục mạng ngay"),
                     ("cancel", "Hủy khởi động lại"), ("menu", "Hiện bàn phím nút bấm"), ("help", "Trợ giúp")]
 
@@ -710,8 +739,13 @@ class Watchdog:
         parts = text.split()
         cmd = parts[0].split("@")[0].lower()
         arg = parts[1].lower() if len(parts) > 1 else ""
+        if cmd == "/net":
+            if not self.cfg["quality"].get("enabled"):
+                return "Chưa bật đo chất lượng mạng (Cài đặt → Kiểm tra mạng)."
+            query = " ".join(parts[1:])
+            return self.nq.force(query) if query else self.nq.report()
         if cmd in ("/status", "/start"):
-            report = status_report(self.cfg, self.state)
+            report = self.full_status()
             return Reply(report, markup=self.reply_keyboard()) if cmd == "/start" else report
         if cmd == "/menu":
             return Reply("⌨️ Đã hiện bàn phím nút bấm.", markup=self.reply_keyboard())
@@ -733,7 +767,13 @@ class Watchdog:
             ok, out = sysops.reboot(30, "NetWatchdog: khởi động lại theo lệnh Telegram")
             if not ok:
                 self.state.set(pending_launch=False)
-            return "🔁 Máy sẽ khởi động lại sau 30 giây (/cancel để hủy)." if ok else f"❌ Lỗi: {out}"
+            if not ok:
+                return f"❌ Lỗi: {out}"
+            al = sysops.autologon_status()
+            warn = "" if al["enabled"] and al["has_password"] else (
+                "\n⚠️ Tự đăng nhập Windows đang TẮT: sau khi khởi động lại máy sẽ dừng ở màn hình đăng nhập, "
+                "NetWatchdog chỉ chạy lại khi có người đăng nhập. Gửi /cancel nếu chưa muốn khởi động lại.")
+            return "🔁 Máy sẽ khởi động lại sau 30 giây (/cancel để hủy)." + warn
         if cmd == "/cancel":
             ok, out = sysops.cancel_reboot()
             if ok:

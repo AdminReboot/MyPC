@@ -185,6 +185,160 @@ def session_locked():
         return None
 
 
+# ---------------------------------------------------------------- Tự đăng nhập Windows
+WINLOGON = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+PASSWORDLESS = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device"
+AUTOLOGON_SECRET = "DefaultPassword"   # tên bí mật LSA mà Winlogon đọc khi AutoAdminLogon=1
+
+
+class _LsaString(ctypes.Structure):
+    _fields_ = [("Length", ctypes.c_ushort), ("MaximumLength", ctypes.c_ushort), ("Buffer", ctypes.c_wchar_p)]
+
+
+class _LsaAttrs(ctypes.Structure):
+    _fields_ = [("Length", ctypes.c_ulong), ("RootDirectory", ctypes.c_void_p), ("ObjectName", ctypes.c_void_p),
+                ("Attributes", ctypes.c_ulong), ("SecurityDescriptor", ctypes.c_void_p),
+                ("SecurityQualityOfService", ctypes.c_void_p)]
+
+
+def _lsa_str(s):
+    if s is None:
+        return None
+    u = _LsaString()
+    u.Buffer = s
+    u.Length = len(s) * 2
+    u.MaximumLength = u.Length + 2
+    return u
+
+
+def _lsa(key, value=None, retrieve=False):
+    """Lưu (value; None = xóa) hoặc kiểm tra có (retrieve=True) bí mật LSA `key`.
+    Trả về (ok, thông báo) khi lưu; (ok, có_dữ_liệu) khi kiểm tra — không bao giờ trả về nội dung."""
+    adv = ctypes.WinDLL("advapi32")
+    adv.LsaOpenPolicy.argtypes = [ctypes.c_void_p, ctypes.POINTER(_LsaAttrs), ctypes.c_ulong, ctypes.POINTER(ctypes.c_void_p)]
+    adv.LsaStorePrivateData.argtypes = [ctypes.c_void_p, ctypes.POINTER(_LsaString), ctypes.POINTER(_LsaString)]
+    adv.LsaRetrievePrivateData.argtypes = [ctypes.c_void_p, ctypes.POINTER(_LsaString),
+                                           ctypes.POINTER(ctypes.POINTER(_LsaString))]
+    adv.LsaClose.argtypes = [ctypes.c_void_p]
+    adv.LsaFreeMemory.argtypes = [ctypes.c_void_p]
+    adv.LsaNtStatusToWinError.argtypes = [ctypes.c_ulong]
+    attrs = _LsaAttrs()
+    attrs.Length = ctypes.sizeof(_LsaAttrs)
+    policy = ctypes.c_void_p()
+    st = adv.LsaOpenPolicy(None, ctypes.byref(attrs), 0x20 | 0x04, ctypes.byref(policy))  # CREATE_SECRET | GET_PRIVATE_INFO
+    if st:
+        return False, f"LsaOpenPolicy lỗi {adv.LsaNtStatusToWinError(st & 0xFFFFFFFF)} (cần quyền Administrator)"
+    try:
+        k = _lsa_str(key)
+        if retrieve:
+            out = ctypes.POINTER(_LsaString)()
+            st = adv.LsaRetrievePrivateData(policy, ctypes.byref(k), ctypes.byref(out))
+            if st:
+                return True, False                 # chưa có bí mật này
+            has = bool(out) and out.contents.Length > 0
+            adv.LsaFreeMemory(out)                 # chỉ biết là có, không đọc nội dung
+            return True, has
+        v = _lsa_str(value)
+        st = adv.LsaStorePrivateData(policy, ctypes.byref(k), ctypes.byref(v) if v is not None else None)
+        return (st == 0), ("OK" if st == 0 else f"LsaStorePrivateData lỗi {adv.LsaNtStatusToWinError(st & 0xFFFFFFFF)}")
+    finally:
+        adv.LsaClose(policy)
+
+
+def check_password(user, domain, password):
+    """Mật khẩu có đúng không: thử đăng nhập bằng LogonUser rồi đóng ngay. Trả về (ok, thông báo)."""
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    adv.LogonUserW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_ulong, ctypes.c_ulong,
+                               ctypes.POINTER(ctypes.c_void_p)]
+    tok = ctypes.c_void_p()
+    if adv.LogonUserW(user, domain or ".", password, 2, 0, ctypes.byref(tok)):  # LOGON32_LOGON_INTERACTIVE
+        ctypes.windll.kernel32.CloseHandle(tok)
+        return True, "OK"
+    err = ctypes.get_last_error()
+    return False, {1326: "sai tên đăng nhập hoặc mật khẩu", 1327: "tài khoản bị hạn chế đăng nhập",
+                   1330: "mật khẩu đã hết hạn", 1331: "tài khoản đang bị vô hiệu"}.get(err, f"lỗi Windows {err}")
+
+
+def autologon_status():
+    """{enabled, user, domain, has_password, passwordless_only} — không bao giờ trả về mật khẩu."""
+    st = {"enabled": False, "user": "", "domain": "", "has_password": False, "passwordless_only": False}
+    if not IS_WIN:
+        return st
+    import winreg
+    plaintext = False
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, WINLOGON) as k:
+            def val(name):
+                try:
+                    return str(winreg.QueryValueEx(k, name)[0])
+                except OSError:
+                    return ""
+            st.update(enabled=val("AutoAdminLogon") == "1", user=val("DefaultUserName"), domain=val("DefaultDomainName"))
+            plaintext = bool(val("DefaultPassword"))
+    except OSError:
+        pass
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, PASSWORDLESS) as k:
+            st["passwordless_only"] = winreg.QueryValueEx(k, "DevicePasswordLessBuildVersion")[0] == 2
+    except OSError:
+        pass
+    ok, has = _lsa(AUTOLOGON_SECRET, retrieve=True)
+    st["has_password"] = bool(ok and has) or plaintext
+    return st
+
+
+def enable_autologon(password, user=None, domain=None):
+    """Bật tự đăng nhập Windows: kiểm tra mật khẩu, lưu vào bí mật LSA (mã hóa, chỉ hệ thống đọc được),
+    đặt khóa Winlogon. Tắt yêu cầu "chỉ đăng nhập bằng Windows Hello" vì nó chặn tự đăng nhập.
+    Mật khẩu không được ghi vào registry dạng chữ, config hay log. Trả về (ok, thông báo)."""
+    import winreg
+    user = user or os.environ.get("USERNAME", "")
+    domain = domain or os.environ.get("USERDOMAIN", "") or "."
+    if not password:
+        return False, "Chưa nhập mật khẩu."
+    ok, msg = check_password(user, domain, password)
+    if not ok:
+        return False, f"Mật khẩu không đúng cho {domain}\\{user}: {msg}."
+    if DRY_RUN:
+        return _dry(f"bật tự đăng nhập cho {domain}\\{user}")
+    ok, msg = _lsa(AUTOLOGON_SECRET, password)
+    if not ok:
+        return False, msg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, WINLOGON, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+            winreg.SetValueEx(k, "AutoAdminLogon", 0, winreg.REG_SZ, "1")
+            winreg.SetValueEx(k, "DefaultUserName", 0, winreg.REG_SZ, user)
+            winreg.SetValueEx(k, "DefaultDomainName", 0, winreg.REG_SZ, domain)
+            for name in ("DefaultPassword", "AutoLogonCount"):   # không để mật khẩu dạng chữ / giới hạn số lần
+                try:
+                    winreg.DeleteValue(k, name)
+                except OSError:
+                    pass
+        with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, PASSWORDLESS, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+            winreg.SetValueEx(k, "DevicePasswordLessBuildVersion", 0, winreg.REG_DWORD, 0)
+    except OSError as e:
+        return False, f"Không ghi được registry: {e}"
+    return True, f"Đã bật tự đăng nhập cho {domain}\\{user}."
+
+
+def disable_autologon():
+    """Tắt tự đăng nhập và xóa mật khẩu đã lưu. Trả về (ok, thông báo)."""
+    import winreg
+    if DRY_RUN:
+        return _dry("tắt tự đăng nhập")
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, WINLOGON, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+            winreg.SetValueEx(k, "AutoAdminLogon", 0, winreg.REG_SZ, "0")
+            try:
+                winreg.DeleteValue(k, "DefaultPassword")
+            except OSError:
+                pass
+    except OSError as e:
+        return False, f"Không ghi được registry: {e}"
+    ok, msg = _lsa(AUTOLOGON_SECRET, None)              # giá trị NULL = xóa bí mật
+    return True, "Đã tắt tự đăng nhập và xóa mật khẩu đã lưu." + ("" if ok else f" (xóa bí mật LSA: {msg})")
+
+
 def reboot(delay_sec=60,message="NetWatchdog: khởi động lại do mất mạng"):
     if DRY_RUN:
         return _dry(f"khởi động lại máy sau {delay_sec}s")

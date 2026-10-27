@@ -2,6 +2,7 @@
 
 Chương trình chạy nền trên Windows 10/11. Nó kiểm tra Internet định kỳ, và khi **rớt mạng** sẽ tự xử lý theo thứ tự:
 
+0. Mạng **chậm** (vẫn kết nối được): tự chuyển sang card mạng tốt hơn, xem [Mạng chậm](#mạng-chậm-tự-chuyển-card).
 1. **Thử kết nối các mạng Wi-Fi dự phòng** đã chọn (lần lượt theo thứ tự ưu tiên).
 2. **Khởi động lại (tắt/bật) các card mạng** đã chọn.
 3. Lặp lại bước 1–2 theo số vòng cấu hình.
@@ -44,12 +45,31 @@ NetWatchdog chạy khi Windows **đăng nhập** xong. Sau khi khởi động l�
 
 Chỉnh ở trang **Khởi động lại & Ứng dụng**: "Chờ mở khóa màn hình" và "Chờ máy ổn định". Lệnh `/apps` trên Telegram mở ứng dụng ngay, không chờ. `/status` có dòng "🔒 Màn hình đang khóa" khi máy đang khóa.
 
-NetWatchdog **không tự mở khóa** được: Windows không cho chương trình nào mở khóa nếu không có mật khẩu. Muốn máy tự vào thẳng màn hình làm việc (không cần ai mở khóa) thì bật tự đăng nhập của Windows:
+### Tự đăng nhập Windows sau khi khởi động lại
 
-- Cách 1: dùng [Sysinternals Autologon](https://learn.microsoft.com/sysinternals/downloads/autologon) của Microsoft (mật khẩu được lưu mã hóa trên máy).
-- Cách 2: `Win+R` → `netplwiz` → bỏ tick *"Users must enter a user name and password…"*. Trên Windows 11, nếu không thấy ô này, hãy tắt *Settings → Accounts → Sign-in options → "For improved security, only allow Windows Hello sign-in…"*.
+Nếu Windows dừng ở màn hình nhập mật khẩu, NetWatchdog **không chạy** cho tới khi có người đăng nhập: không đổi được card mạng, không mở được ứng dụng. Khi mạng chậm, vào máy từ xa để gõ mật khẩu cũng không được.
 
-Lưu ý: bật tự đăng nhập nghĩa là ai bật máy cũng vào được tài khoản của bạn.
+Bật ở trang **Khởi động lại & Ứng dụng → Tự đăng nhập Windows**: nhập mật khẩu đăng nhập Windows (không phải mã PIN) rồi bấm **Bật**.
+
+- Mật khẩu được kiểm tra đúng trước, rồi lưu **mã hóa trong kho bí mật LSA của Windows** (cách Windows tự đọc khi tự đăng nhập, giống Sysinternals Autologon). Không lưu trong `config.json`, không ghi log, không gửi đi đâu.
+- Chương trình cũng tắt chế độ "chỉ cho đăng nhập bằng Windows Hello", vì chế độ này chặn tự đăng nhập.
+- Bấm **Tắt** để tắt và xóa mật khẩu đã lưu.
+- Đổi lại: **ai bật máy cũng vào được tài khoản này**.
+- `/status` có dòng "🔑 Tự đăng nhập Windows: bật/TẮT"; lệnh `/reboot` cảnh báo khi tự đăng nhập đang tắt.
+
+### Mạng chậm: tự chuyển card
+
+Kiểm tra "có mạng hay không" không phát hiện được mạng **rất chậm nhưng vẫn kết nối được**. Windows lại luôn ưu tiên card có dây, nên dù các card Wi-Fi đang tốt, mọi thứ vẫn đi qua đường chậm.
+
+NetWatchdog đo **riêng từng card** mỗi phút (gắn kết nối vào IP của card đó): thời gian bắt tay TCP tới 1.1.1.1, 8.8.8.8, 208.67.222.222 và tỉ lệ lỗi; mỗi 5 phút tải thử ~300 KB từ speed.cloudflare.com (miễn phí) để đo tốc độ.
+
+- Card **đang dùng cho Internet** bị coi là chậm khi độ trễ trên 800 ms, lỗi từ 50%, hoặc tốc độ dưới 500 kbps.
+- Chậm liên tục 3 lần đo mà có card khác tốt hơn: đổi **interface metric** để Windows ưu tiên card tốt nhất (độ trễ thấp, tốc độ cao). Card chậm **không bị tắt**, vẫn được đo để làm dự phòng. Kết nối đang mở (vd. UltraViewer) vẫn giữ đường cũ, kết nối mới đi đường mới.
+- Sau mỗi lần chuyển, chờ 10 phút mới xét chuyển tiếp để không nhảy qua lại.
+- Mọi card đều chậm: báo một lần, không chuyển.
+- **Wi-Fi dự phòng**: card Wi-Fi đang rảnh tự vào một mạng trong danh sách ở trang **Wi-Fi dự phòng** (ưu tiên mạng chưa card nào dùng), để lúc cần chuyển được ngay. Nên chọn đủ các mạng cho mọi card.
+- Lệnh `/net`: bảng đo từng card (⭐ = đang dùng). `/net wi-fi 3`: ép ưu tiên card đó.
+- Chỉnh ngưỡng ở trang **Kiểm tra mạng → Mạng chậm: tự chuyển card**.
 
 ## Lệnh Telegram
 
@@ -63,7 +83,8 @@ Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình. Gửi `/start` ho�
 
 | Lệnh | Tác dụng |
 |---|---|
-| `/status` | Báo cáo tình trạng máy |
+| `/status` | Báo cáo tình trạng máy (kèm chất lượng từng card mạng) |
+| `/net` | Chất lượng từng card mạng. `/net <tên card>` (vd. `/net wi-fi 3`): ưu tiên card đó ngay |
 | `/apps` | Mở các ứng dụng đã chọn |
 | `/fix` | Chạy quy trình khôi phục mạng ngay |
 | `/reboot yes` | Khởi động lại máy sau 30 giây |
@@ -132,6 +153,7 @@ Build trên máy: cài Inno Setup 6 (`choco install innosetup`) và `pip install
 |---|---|
 | `app.py` | Điểm vào của `NetWatchdog.exe`: mở Cài đặt, `--service` chạy nền, `--install-task` / `--uninstall-task` |
 | `netwatchdog.py` | Vòng lặp theo dõi, quy trình khôi phục, Telegram (gửi + hàng đợi + lệnh), báo cáo |
+| `netquality.py` | Mạng chậm: đo từng card mạng (độ trễ, tốc độ), tự đổi interface metric sang card tốt hơn, giữ Wi-Fi dự phòng |
 | `jxtd.py` | Theo dõi nhân vật jxtdAuto: đọc bảng qua UI Automation, lịch sử CSV, cảnh báo |
 | `sysops.py` | Thao tác Windows: `netsh wlan`, `Disable/Enable-NetAdapter`, `shutdown`, mở ứng dụng, Scheduled Task |
 | `settings_gui.py` | Cửa sổ Cài đặt (Tkinter), ghi `config.json` |
