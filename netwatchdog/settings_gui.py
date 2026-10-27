@@ -826,9 +826,27 @@ class SettingsApp(tk.Tk):
                     "min_uptime", r.get("min_uptime_before_reboot_min", 15), "phút")
 
         self.gap(p.body)
+        card = Card(p.body, self, "Tự đăng nhập Windows",
+                    "Sau khi khởi động lại, Windows tự đăng nhập tài khoản này để NetWatchdog chạy được ngay (đổi card mạng, "
+                    "mở ứng dụng) mà không cần ai gõ mật khẩu. Mật khẩu được kiểm tra rồi lưu mã hóa trong kho bí mật của "
+                    "Windows (LSA), giống Sysinternals Autologon; không lưu trong file cấu hình. Đổi lại: ai bật máy cũng "
+                    "vào được tài khoản này.")
+        card.pack(fill="x")
+        ctl = card.add_row("Trạng thái", None)
+        self.al_status = tk.Label(ctl, text="", font=self.f_bold, bg=c["surface"], fg=c["muted"])
+        self.al_status.pack()
+        ctl = card.add_row(f"Mật khẩu của {os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}",
+                           "Mật khẩu đăng nhập Windows (không phải mã PIN).")
+        self.al_pw = tk.StringVar()                       # không đưa vào self.vars: không bao giờ được lưu ra config
+        ttk.Entry(ctl, textvariable=self.al_pw, width=22, show="•").pack(side="left")
+        ttk.Button(ctl, text="Bật", style="Accent.TButton", command=self.autologon_on).pack(side="left", padx=(8, 0))
+        ttk.Button(ctl, text="Tắt", command=self.autologon_off).pack(side="left", padx=(8, 0))
+        self.after(200, self.autologon_refresh)
+
+        self.gap(p.body)
         card = Card(p.body, self, "Ứng dụng tự mở",
                     "Windows phải đăng nhập xong thì NetWatchdog mới chạy được. Nếu máy đang khóa, ứng dụng "
-                    "được mở sau khi bạn mở khóa (xem README để máy tự mở khóa hoàn toàn).")
+                    "được mở sau khi bạn mở khóa. Bật Tự đăng nhập Windows ở trên để máy vào thẳng màn hình làm việc.")
         card.pack(fill="x")
         self.launch_mode = tk.StringVar(value=self.cfg.get("launch_apps", "after_reboot"))
         Segmented(card.add_row("Khi nào mở"), self, self.launch_mode,
@@ -881,6 +899,23 @@ class SettingsApp(tk.Tk):
                     r.get("rounds", 2), "vòng")
         self.number(card, "Nghỉ giữa các lần thất bại", "Khi khôi phục thất bại mà không reboot.", "cooldown",
                     r.get("retry_cooldown_min", 10), "phút")
+        self.gap(p.body)
+        Q = self.cfg["quality"]
+        card = Card(p.body, self, "Mạng chậm: tự chuyển card",
+                    "Đo riêng từng card mạng mỗi chu kỳ. Card đang dùng cho Internet mà chậm liên tục trong khi có card khác "
+                    "tốt hơn thì Windows được chỉnh để ưu tiên card tốt (đổi interface metric). Card chậm không bị tắt.")
+        card.pack(fill="x")
+        self.toggle(card, "Bật đo chất lượng & tự chuyển card", "Lệnh Telegram /net xem kết quả đo từng card.",
+                    "q_on", Q.get("enabled", True))
+        self.number(card, "Coi là chậm khi độ trễ trên", "Thời gian bắt tay TCP (trung vị) tới 1.1.1.1, 8.8.8.8…",
+                    "q_rtt", Q.get("rtt_bad_ms", 800), "ms")
+        self.number(card, "…hoặc tốc độ tải dưới", "Tải thử ~300 KB mỗi 5 phút qua từng card. 0 = không đo tốc độ.",
+                    "q_kbps", Q.get("speed_bad_kbps", 500) if Q.get("speed_test", True) else 0, "kbps")
+        self.number(card, "Chậm liên tục bao nhiêu lần đo", "Rồi mới chuyển card (mỗi lần đo cách nhau 1 phút).",
+                    "q_bad", Q.get("bad_checks", 3), "lần")
+        self.toggle(card, "Giữ Wi-Fi dự phòng luôn kết nối",
+                    "Card Wi-Fi đang rảnh sẽ tự vào một mạng trong danh sách ở trang Wi-Fi dự phòng, để chuyển được ngay.",
+                    "q_standby", Q.get("standby_wifi", True))
         return p
 
     def page_jxtd(self):
@@ -1527,6 +1562,36 @@ class SettingsApp(tk.Tk):
     def mark_dirty_text(self):
         self.set_status_text("●  Có thay đổi chưa lưu — Ctrl+S để lưu", self.c["accent"])
 
+    def autologon_refresh(self):
+        try:
+            st = sysops.autologon_status()
+        except Exception as e:  # noqa: BLE001
+            self.al_status.config(text=f"Không đọc được ({e})", fg=self.c["danger"])
+            return
+        if st["enabled"] and st["has_password"]:
+            self.al_status.config(text=f"Đang bật ({st['domain']}\\{st['user']})", fg=self.c["success"])
+        elif st["enabled"]:
+            self.al_status.config(text="Bật nhưng chưa có mật khẩu", fg=self.c["danger"])
+        else:
+            self.al_status.config(text="Đang tắt: khởi động lại sẽ dừng ở màn hình đăng nhập", fg=self.c["danger"])
+
+    def autologon_on(self):
+        pw = self.al_pw.get()
+        if not pw:
+            messagebox.showwarning("Tự đăng nhập", "Hãy nhập mật khẩu đăng nhập Windows trước.")
+            return
+        ok, msg = sysops.enable_autologon(pw)
+        self.al_pw.set("")                                # xóa ngay khỏi ô nhập
+        (messagebox.showinfo if ok else messagebox.showerror)("Tự đăng nhập", msg)
+        self.autologon_refresh()
+
+    def autologon_off(self):
+        if not messagebox.askyesno("Tự đăng nhập", "Tắt tự đăng nhập và xóa mật khẩu đã lưu?"):
+            return
+        ok, msg = sysops.disable_autologon()
+        (messagebox.showinfo if ok else messagebox.showerror)("Tự đăng nhập", msg)
+        self.autologon_refresh()
+
     def _int(self, key, default):
         try:
             return max(0, int(float(self.vars[key].get())))
@@ -1556,6 +1621,10 @@ class SettingsApp(tk.Tk):
             reboot_delay_sec=max(10, self._int("reboot_delay", 60)),
             max_reboots_per_day=self._int("max_reboots", 3),
             min_uptime_before_reboot_min=self._int("min_uptime", 15))
+        kbps = self._int("q_kbps", 500)
+        c["quality"].update(enabled=self.vars["q_on"].get(), rtt_bad_ms=max(100, self._int("q_rtt", 800)),
+                            speed_test=kbps > 0, speed_bad_kbps=kbps or c["quality"].get("speed_bad_kbps", 500),
+                            bad_checks=max(1, self._int("q_bad", 3)), standby_wifi=self.vars["q_standby"].get())
         c["launch_apps"] = self.launch_mode.get()
         c["launch"].update(wait_unlock=self.vars["launch_unlock"].get(), delay_sec=self._int("launch_delay", 60))
         c["jxtd"].update(

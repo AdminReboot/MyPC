@@ -16,6 +16,29 @@
     "fail_threshold": 3,
     "timeout_sec": 4
   },
+  "quality": {
+    "enabled": true,
+    "interval_sec": 60,
+    "targets": [
+      "1.1.1.1:443",
+      "8.8.8.8:443",
+      "208.67.222.222:443"
+    ],
+    "probes_per_target": 2,
+    "timeout_sec": 3,
+    "rtt_bad_ms": 800,
+    "loss_bad_pct": 50,
+    "speed_test": true,
+    "speed_bytes": 300000,
+    "speed_every_min": 5,
+    "speed_bad_kbps": 500,
+    "bad_checks": 3,
+    "switch_cooldown_min": 10,
+    "standby_wifi": true,
+    "standby_retry_min": 5,
+    "metric_best": 5,
+    "metric_other": 100
+  },
   "recovery": {
     "wifi_profiles": [],
     "wifi_interface": "",
