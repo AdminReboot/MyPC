@@ -57,6 +57,16 @@ Bật ở trang **Khởi động lại & Ứng dụng → Tự đăng nhập Win
 - Đổi lại: **ai bật máy cũng vào được tài khoản này**.
 - `/status` có dòng "🔑 Tự đăng nhập Windows: bật/TẮT"; lệnh `/reboot` cảnh báo khi tự đăng nhập đang tắt.
 
+### Tự khóa máy và cảnh báo thao tác tại máy
+
+Ở trang **Khởi động lại & Ứng dụng → Khóa máy & thao tác tại máy**:
+
+- **Tự khóa**: không có thao tác chuột/bàn phím (kể cả qua UltraViewer) quá 5 phút thì khóa máy như bấm `Win+L`. Lệnh Telegram `/lock` khóa ngay. Người điều khiển từ xa mở khóa bằng cách **gõ mật khẩu Windows trên màn hình khóa** qua UltraViewer (dịch vụ UltraViewer chạy quyền hệ thống nên thấy được màn hình khóa). NetWatchdog không tự mở khóa: Windows không cho chương trình mở khóa mà không có người gõ mật khẩu.
+- **Cảnh báo thao tác tại máy**: khi có người dùng chuột/bàn phím **thật** tại máy, Telegram nhận `⚠️ Có người dùng bàn phím TRỰC TIẾP tại máy…` kèm ảnh màn hình. Thao tác qua điều khiển từ xa (UltraViewer) **không** bị tính: Windows đánh dấu chúng là thao tác giả lập (đã kiểm chứng: 247 phím + 18 sự kiện chuột qua UltraViewer đều được nhận là giả lập). Mỗi lượt có người dùng báo một lần; hết thao tác 10 phút thì gửi tin tóm tắt và lượt sau sẽ báo lại. Rung bàn nhẹ làm chuột trôi vài điểm không bị tính.
+- Dùng **Raw Input**: chỉ nhận bản sao sự kiện, không chặn luồng nhập nên không làm chậm chuột; chỉ **đếm** sự kiện, không ghi phím nào được gõ hay vị trí chuột.
+- Khi máy đang khóa, thao tác trên màn hình khóa không đọc được; lần thao tác đầu tiên sau khi mở khóa tại máy sẽ được phát hiện.
+- `/status` có dòng trạng thái khóa máy và lần thao tác tại máy gần nhất.
+
 ### Mạng chậm: tự chuyển card
 
 Kiểm tra "có mạng hay không" không phát hiện được mạng **rất chậm nhưng vẫn kết nối được**. Windows lại luôn ưu tiên card có dây, nên dù các card Wi-Fi đang tốt, mọi thứ vẫn đi qua đường chậm.
@@ -83,7 +93,8 @@ Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình. Gửi `/start` ho�
 
 | Lệnh | Tác dụng |
 |---|---|
-| `/status` | Báo cáo tình trạng máy (kèm chất lượng từng card mạng) |
+| `/status` | Báo cáo tình trạng máy (kèm chất lượng từng card mạng, trạng thái khóa máy) |
+| `/lock` | Khóa máy ngay |
 | `/net` | Chất lượng từng card mạng. `/net <tên card>` (vd. `/net wi-fi 3`): ưu tiên card đó ngay |
 | `/apps` | Mở các ứng dụng đã chọn |
 | `/fix` | Chạy quy trình khôi phục mạng ngay |
@@ -153,6 +164,7 @@ Build trên máy: cài Inno Setup 6 (`choco install innosetup`) và `pip install
 |---|---|
 | `app.py` | Điểm vào của `NetWatchdog.exe`: mở Cài đặt, `--service` chạy nền, `--install-task` / `--uninstall-task` |
 | `netwatchdog.py` | Vòng lặp theo dõi, quy trình khôi phục, Telegram (gửi + hàng đợi + lệnh), báo cáo |
+| `presence.py` | Tự khóa máy khi không có người dùng; phát hiện thao tác chuột/bàn phím thật tại máy (Raw Input) |
 | `netquality.py` | Mạng chậm: đo từng card mạng (độ trễ, tốc độ), tự đổi interface metric sang card tốt hơn, giữ Wi-Fi dự phòng |
 | `jxtd.py` | Theo dõi nhân vật jxtdAuto: đọc bảng qua UI Automation, lịch sử CSV, cảnh báo |
 | `sysops.py` | Thao tác Windows: `netsh wlan`, `Disable/Enable-NetAdapter`, `shutdown`, mở ứng dụng, Scheduled Task |

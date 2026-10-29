@@ -39,6 +39,16 @@
     "metric_best": 5,
     "metric_other": 100
   },
+  "presence": {
+    "auto_lock": true,
+    "idle_lock_min": 5,
+    "local_input_alert": true,
+    "min_keys": 1,
+    "min_mouse": 15,
+    "window_sec": 10,
+    "quiet_min": 10,
+    "screenshot": true
+  },
   "recovery": {
     "wifi_profiles": [],
     "wifi_interface": "",
