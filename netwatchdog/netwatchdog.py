@@ -31,6 +31,7 @@ from logging.handlers import RotatingFileHandler
 
 import jxtd
 import netquality
+import presence
 import sysops
 from version import __version__
 
@@ -69,7 +70,8 @@ DEFAULT_CONFIG = {
         "fail_threshold": 3,
         "timeout_sec": 4,
     },
-    "quality": netquality.DEFAULT_CONFIG,   # mạng chậm: đo từng card, tự chuyển card (xem netquality.py)
+    "quality": netquality.DEFAULT_CONFIG,
+    "presence": presence.DEFAULT_CONFIG,    # tự khóa máy, cảnh báo thao tác trực tiếp tại máy (xem presence.py)   # mạng chậm: đo từng card, tự chuyển card (xem netquality.py)
     "recovery": {
         "wifi_profiles": [],
         "wifi_interface": "",
@@ -367,6 +369,9 @@ class Watchdog:
         self.recovering = threading.Lock()
         self.jx = None
         self.nq = netquality.QualityMonitor(lambda: self.cfg, self.tg.send)
+        self.raw = None
+        self.pm = presence.PresenceMonitor(lambda: self.cfg, self.tg.send, send_photo=self.tg.send_photo,
+                                           label=lambda: f" {machine_name(self.cfg)}:")
 
     @property
     def cfg(self):
@@ -472,6 +477,7 @@ class Watchdog:
             threading.Thread(target=self.command_loop, daemon=True, name="tg-commands").start()
         threading.Thread(target=self.jxtd_loop, daemon=True, name="jxtd").start()
         threading.Thread(target=self.quality_loop, daemon=True, name="net-quality").start()
+        threading.Thread(target=self.presence_loop, daemon=True, name="presence").start()
         fails = 0
         while not self.stop_event.is_set():
             cfg = self.cfg
@@ -532,8 +538,26 @@ class Watchdog:
                     log.exception("Lỗi khi đo chất lượng mạng")
             self.sleep(max(15, Q.get("interval_sec", 60)))
 
+    # ------------------------------------------------ Khóa máy & thao tác tại máy
+    def presence_loop(self):
+        """Tự khóa máy khi không có người dùng; báo khi có người thao tác trực tiếp tại máy (Raw Input)."""
+        while not self.stop_event.is_set():
+            P = self.cfg["presence"]
+            if P.get("local_input_alert") and self.raw is None:
+                self.raw = presence.RawInputWatcher()
+                self.raw.start()
+                self.raw.ready.wait(5)
+                self.pm.watcher = self.raw
+                log.info("Giám sát thao tác tại máy: %s", self.raw.error or "đã bật (Raw Input)")
+            try:
+                self.pm.tick()
+            except Exception:  # noqa: BLE001
+                log.exception("Lỗi khi theo dõi khóa máy / thao tác tại máy")
+            self.sleep(2)
+
     def full_status(self):
         report = status_report(self.cfg, self.state)
+        report += "\n" + self.pm.status_line()
         return report + ("\n" + self.nq.report() if self.cfg["quality"].get("enabled") else "")
 
     # ------------------------------------------------ jxtdAuto
@@ -645,6 +669,7 @@ class Watchdog:
             "/fix — chạy quy trình khôi phục mạng ngay\n"
             "/reboot yes — khởi động lại máy\n"
             "/cancel — hủy lệnh khởi động lại đang chờ\n"
+            "/lock — khóa máy ngay\n"
             "/jx — bảng nhân vật jxtdAuto (/jx <tên> — một nhân vật, không cần dấu)\n"
             "/jx_gon — jxtdAuto rút gọn, mỗi nhân vật một dòng\n"
             "/jx_homnay — tổng kết jxtdAuto trong ngày\n"
@@ -665,7 +690,7 @@ class Watchdog:
                     ("jx_homnay", "Tổng kết jxtdAuto hôm nay"), ("jx_nv", "Chọn nhân vật"),
                     ("jx_anh", "Ảnh chụp cửa sổ jxtdAuto"), ("status", "Tình trạng máy"), ("net", "Chất lượng từng card mạng"),
                     ("apps", "Mở các ứng dụng đã chọn"), ("fix", "Khôi phục mạng ngay"),
-                    ("cancel", "Hủy khởi động lại"), ("menu", "Hiện bàn phím nút bấm"), ("help", "Trợ giúp")]
+                    ("cancel", "Hủy khởi động lại"), ("lock", "Khóa máy ngay"), ("menu", "Hiện bàn phím nút bấm"), ("help", "Trợ giúp")]
 
     @classmethod
     def reply_keyboard(cls):
@@ -774,6 +799,9 @@ class Watchdog:
                 "\n⚠️ Tự đăng nhập Windows đang TẮT: sau khi khởi động lại máy sẽ dừng ở màn hình đăng nhập, "
                 "NetWatchdog chỉ chạy lại khi có người đăng nhập. Gửi /cancel nếu chưa muốn khởi động lại.")
             return "🔁 Máy sẽ khởi động lại sau 30 giây (/cancel để hủy)." + warn
+        if cmd == "/lock":
+            ok, out = presence.lock_workstation()
+            return "🔒 Đã khóa máy." if ok else f"❌ Không khóa được: {out}"
         if cmd == "/cancel":
             ok, out = sysops.cancel_reboot()
             if ok:

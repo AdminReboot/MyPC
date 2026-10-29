@@ -844,6 +844,21 @@ class SettingsApp(tk.Tk):
         self.after(200, self.autologon_refresh)
 
         self.gap(p.body)
+        P = self.cfg["presence"]
+        card = Card(p.body, self, "Khóa máy & thao tác tại máy",
+                    "Người điều khiển từ xa (UltraViewer) mở khóa bằng cách gõ mật khẩu Windows trên màn hình khóa. "
+                    "Thao tác qua điều khiển từ xa không bị tính là thao tác tại máy.")
+        card.pack(fill="x")
+        self.toggle(card, "Tự khóa máy khi không có người dùng", "Như bấm Win+L. Lệnh Telegram /lock khóa ngay.",
+                    "pr_lock", P.get("auto_lock", True))
+        self.number(card, "Không có thao tác quá", None, "pr_idle", P.get("idle_lock_min", 5), "phút")
+        self.toggle(card, "Báo khi có người dùng chuột/bàn phím tại máy",
+                    "Chỉ đếm thao tác, không ghi phím nào được gõ. Mỗi lượt có người dùng báo một lần.",
+                    "pr_alert", P.get("local_input_alert", True))
+        self.toggle(card, "Gửi kèm ảnh màn hình", "Ảnh màn hình lúc phát hiện, gửi qua Telegram.",
+                    "pr_shot", P.get("screenshot", True))
+
+        self.gap(p.body)
         card = Card(p.body, self, "Ứng dụng tự mở",
                     "Windows phải đăng nhập xong thì NetWatchdog mới chạy được. Nếu máy đang khóa, ứng dụng "
                     "được mở sau khi bạn mở khóa. Bật Tự đăng nhập Windows ở trên để máy vào thẳng màn hình làm việc.")
@@ -1625,6 +1640,8 @@ class SettingsApp(tk.Tk):
         c["quality"].update(enabled=self.vars["q_on"].get(), rtt_bad_ms=max(100, self._int("q_rtt", 800)),
                             speed_test=kbps > 0, speed_bad_kbps=kbps or c["quality"].get("speed_bad_kbps", 500),
                             bad_checks=max(1, self._int("q_bad", 3)), standby_wifi=self.vars["q_standby"].get())
+        c["presence"].update(auto_lock=self.vars["pr_lock"].get(), idle_lock_min=max(1, self._int("pr_idle", 5)),
+                             local_input_alert=self.vars["pr_alert"].get(), screenshot=self.vars["pr_shot"].get())
         c["launch_apps"] = self.launch_mode.get()
         c["launch"].update(wait_unlock=self.vars["launch_unlock"].get(), delay_sec=self._int("launch_delay", 60))
         c["jxtd"].update(
