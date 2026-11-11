@@ -32,6 +32,7 @@ from logging.handlers import RotatingFileHandler
 import jxtd
 import netquality
 import presence
+import remote
 import sysops
 from version import __version__
 
@@ -71,7 +72,8 @@ DEFAULT_CONFIG = {
         "timeout_sec": 4,
     },
     "quality": netquality.DEFAULT_CONFIG,
-    "presence": presence.DEFAULT_CONFIG,    # tự khóa máy, cảnh báo thao tác trực tiếp tại máy (xem presence.py)   # mạng chậm: đo từng card, tự chuyển card (xem netquality.py)
+    "presence": presence.DEFAULT_CONFIG,    # tự khóa máy, cảnh báo thao tác trực tiếp tại máy (xem presence.py)
+    "remote": remote.DEFAULT_CONFIG,        # điều khiển máy khẩn cấp qua Telegram (xem remote.py)
     "recovery": {
         "wifi_profiles": [],
         "wifi_interface": "",
@@ -251,14 +253,18 @@ class Telegram:
             if "not modified" not in str(e):
                 raise
 
-    def send_photo(self, png, caption="", timeout=60):
-        """Gửi ảnh PNG ngay (không xếp hàng đợi — ảnh chỉ có ý nghĩa lúc vừa chụp)."""
+    def send_photo(self, png, caption="", timeout=60, markup=None, mime="image/png"):
+        """Gửi ảnh (PNG/JPEG) ngay (không xếp hàng đợi — ảnh chỉ có ý nghĩa lúc vừa chụp)."""
         boundary = uuid.uuid4().hex
         parts = []
-        for name, value in (("chat_id", self.chat_id), ("caption", caption[:1000])):
+        fields = [("chat_id", self.chat_id), ("caption", caption[:1000])]
+        if markup:
+            fields.append(("reply_markup", json.dumps(markup, ensure_ascii=False)))
+        for name, value in fields:
             parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
-        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="jxtdauto.png"\r\n'
-                     f"Content-Type: image/png\r\n\r\n".encode() + png + b"\r\n")
+        ext = "jpg" if mime == "image/jpeg" else "png"
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="screen.{ext}"\r\n'
+                     f"Content-Type: {mime}\r\n\r\n".encode() + png + b"\r\n")
         parts.append(f"--{boundary}--\r\n".encode())
         req = urllib.request.Request(f"https://api.telegram.org/bot{self.token}/sendPhoto", data=b"".join(parts),
                                      headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
@@ -266,6 +272,9 @@ class Telegram:
             res = json.loads(r.read().decode("utf-8"))
         if not res.get("ok"):
             raise RuntimeError(res.get("description", "Telegram lỗi"))
+
+    def delete_message(self, message_id):
+        self.call("deleteMessage", {"chat_id": self.chat_id, "message_id": message_id})
 
     def send(self, text, html=False):
         """Xếp tin vào hàng đợi (lưu đĩa) rồi thử gửi ngay."""
@@ -370,8 +379,11 @@ class Watchdog:
         self.jx = None
         self.nq = netquality.QualityMonitor(lambda: self.cfg, self.tg.send)
         self.raw = None
+        self.cur_msg = {}
+        self.rc = remote.RemoteControl(lambda: self.cfg, self.tg.send, self.tg.send_photo,
+                                       delete_message=self.tg.delete_message, label=lambda: f" {machine_name(self.cfg)}:")
         self.pm = presence.PresenceMonitor(lambda: self.cfg, self.tg.send, send_photo=self.tg.send_photo,
-                                           label=lambda: f" {machine_name(self.cfg)}:")
+                                           label=lambda: f" {machine_name(self.cfg)}:", hold=self.rc.active)
 
     @property
     def cfg(self):
@@ -551,6 +563,7 @@ class Watchdog:
                 log.info("Giám sát thao tác tại máy: %s", self.raw.error or "đã bật (Raw Input)")
             try:
                 self.pm.tick()
+                self.rc.tick()
             except Exception:  # noqa: BLE001
                 log.exception("Lỗi khi theo dõi khóa máy / thao tác tại máy")
             self.sleep(2)
@@ -558,6 +571,8 @@ class Watchdog:
     def full_status(self):
         report = status_report(self.cfg, self.state)
         report += "\n" + self.pm.status_line()
+        rc = self.rc.status_line()
+        report += "\n" + rc if rc else ""
         return report + ("\n" + self.nq.report() if self.cfg["quality"].get("enabled") else "")
 
     # ------------------------------------------------ jxtdAuto
@@ -670,6 +685,7 @@ class Watchdog:
             "/reboot yes — khởi động lại máy\n"
             "/cancel — hủy lệnh khởi động lại đang chờ\n"
             "/lock — khóa máy ngay\n"
+            "/dk <mã PIN> — điều khiển máy qua Telegram (ảnh màn hình, bấm chuột, gõ phím)\n"
             "/jx — bảng nhân vật jxtdAuto (/jx <tên> — một nhân vật, không cần dấu)\n"
             "/jx_gon — jxtdAuto rút gọn, mỗi nhân vật một dòng\n"
             "/jx_homnay — tổng kết jxtdAuto trong ngày\n"
@@ -690,7 +706,8 @@ class Watchdog:
                     ("jx_homnay", "Tổng kết jxtdAuto hôm nay"), ("jx_nv", "Chọn nhân vật"),
                     ("jx_anh", "Ảnh chụp cửa sổ jxtdAuto"), ("status", "Tình trạng máy"), ("net", "Chất lượng từng card mạng"),
                     ("apps", "Mở các ứng dụng đã chọn"), ("fix", "Khôi phục mạng ngay"),
-                    ("cancel", "Hủy khởi động lại"), ("lock", "Khóa máy ngay"), ("menu", "Hiện bàn phím nút bấm"), ("help", "Trợ giúp")]
+                    ("cancel", "Hủy khởi động lại"), ("lock", "Khóa máy ngay"),
+                    ("dk", "Điều khiển máy (cần mã PIN)"), ("mh", "Ảnh màn hình khi đang điều khiển"), ("menu", "Hiện bàn phím nút bấm"), ("help", "Trợ giúp")]
 
     @classmethod
     def reply_keyboard(cls):
@@ -734,6 +751,7 @@ class Watchdog:
                             pass
                         reply = self.handle_callback(cq.get("data") or "")
                     else:
+                        self.cur_msg = msg
                         reply = self.handle_command((msg.get("text") or "").strip())
                 except Exception as e:  # noqa: BLE001
                     log.exception("Lỗi xử lý lệnh")
@@ -799,6 +817,10 @@ class Watchdog:
                 "\n⚠️ Tự đăng nhập Windows đang TẮT: sau khi khởi động lại máy sẽ dừng ở màn hình đăng nhập, "
                 "NetWatchdog chỉ chạy lại khi có người đăng nhập. Gửi /cancel nếu chưa muốn khởi động lại.")
             return "🔁 Máy sẽ khởi động lại sau 30 giây (/cancel để hủy)." + warn
+        if cmd in remote.COMMANDS:
+            rest = text.split(None, 1)[1] if len(text.split(None, 1)) > 1 else ""
+            msg, self.cur_msg = self.cur_msg, {}
+            return self.rc.handle(cmd, rest, msg)
         if cmd == "/lock":
             ok, out = presence.lock_workstation()
             return "🔒 Đã khóa máy." if ok else f"❌ Không khóa được: {out}"
@@ -807,7 +829,10 @@ class Watchdog:
             if ok:
                 self.state.set(pending_launch=False)
             return "✅ Đã hủy khởi động lại." if ok else f"Không có lệnh nào để hủy ({out[:200]})"
-        return Reply(self.HELP, markup=self.reply_keyboard())
+        return Reply(self.help_text(), markup=self.reply_keyboard())
+
+    def help_text(self):
+        return self.HELP + ("\n\n" + remote.HELP if self.cfg["remote"].get("enabled") else "")
 
     def jx_command(self, cmd, arg):
         cfg = self.cfg
@@ -852,6 +877,8 @@ class Watchdog:
 
     def handle_callback(self, data):
         """Nút inline: jx:c:<tên> xem nhân vật, jx:h|d:<tên|*>[:số ngày] thống kê theo giờ/ngày (sửa tại chỗ)."""
+        if data.startswith("rc:"):
+            return self.rc.callback(data)
         parts = data.split(":", 2)
         if len(parts) != 3 or parts[0] != "jx":
             return ""

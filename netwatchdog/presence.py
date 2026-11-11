@@ -178,12 +178,14 @@ class PresenceMonitor:
     """Gọi tick() vài giây một lần. Các hàm hệ thống truyền vào để test được."""
 
     def __init__(self, get_cfg, notify, send_photo=None, watcher=None, idle=idle_seconds, locked=None,
-                 lock=lock_workstation, screenshot=capture_screen_png, clock=time.time, label=None):
+                 lock=lock_workstation, screenshot=capture_screen_png, clock=time.time, label=None,
+                 hold=None):
         import sysops
         self.get_cfg, self.notify, self.send_photo = get_cfg, notify, send_photo
         self.watcher, self.idle, self.lock, self.screenshot, self.clock = watcher, idle, lock, screenshot, clock
         self.locked = locked or sysops.session_locked
         self.label = label or (lambda: "")
+        self.hold = hold or (lambda: False)     # True = tạm không tự khóa (đang điều khiển qua Telegram)
         self.prev = None                      # số đếm lần trước
         self.window = []                      # [(thời điểm, phím mới, chuột mới)] trong cửa sổ `window_sec`
         self.episode = None                   # {"start", "last", "keys", "mouse"} khi đang có người ở máy
@@ -197,7 +199,7 @@ class PresenceMonitor:
         P, now, sent = self.P(), self.clock(), []
         is_locked = bool(self.locked())
         # 1) tự khóa khi không có ai dùng
-        if P["auto_lock"] and not is_locked and now - self.last_lock_try >= 60:
+        if P["auto_lock"] and not is_locked and now - self.last_lock_try >= 60 and not self.hold():
             idle = self.idle()
             if idle >= P["idle_lock_min"] * 60:
                 self.last_lock_try = now

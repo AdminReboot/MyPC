@@ -859,6 +859,26 @@ class SettingsApp(tk.Tk):
                     "pr_shot", P.get("screenshot", True))
 
         self.gap(p.body)
+        R = self.cfg["remote"]
+        card = Card(p.body, self, "Điều khiển máy qua Telegram",
+                    "Cứu máy khi mạng quá chậm cho UltraViewer/RustDesk: gửi /dk <mã PIN> cho bot rồi xem ảnh màn hình có "
+                    "lưới ô, bấm chuột (/c D4), gõ chữ (/go), nhấn phím (/phim enter). Không dùng được khi máy đang khóa. "
+                    "Ai có tài khoản Telegram của bạn và mã PIN là điều khiển được máy: hãy đặt mã PIN khó đoán.")
+        card.pack(fill="x")
+        self.toggle(card, "Cho phép điều khiển qua Telegram", "Chỉ nhận lệnh từ Chat ID đã cấu hình, trong chat riêng.",
+                    "rc_on", R.get("enabled", False))
+        ctl = card.add_row("Mã PIN", "Ít nhất 6 ký tự. Lưu dạng băm, không lưu nguyên văn. Sai 5 lần: khóa 1 giờ.")
+        self.rc_pin = tk.StringVar()                      # không đưa vào self.vars
+        ttk.Entry(ctl, textvariable=self.rc_pin, width=16, show="•").pack(side="left")
+        ttk.Button(ctl, text="Đặt mã PIN", command=self.remote_set_pin).pack(side="left", padx=(8, 0))
+        self.rc_pin_status = tk.Label(ctl, font=self.f_small, bg=c["surface"])
+        self.rc_pin_status.pack(side="left", padx=(8, 0))
+        self.rc_new_pin = None
+        self._remote_pin_label()
+        self.number(card, "Tự tắt phiên sau", "Không có lệnh nào trong thời gian này thì phải gửi lại mã PIN.",
+                    "rc_session", R.get("session_min", 10), "phút")
+
+        self.gap(p.body)
         card = Card(p.body, self, "Ứng dụng tự mở",
                     "Windows phải đăng nhập xong thì NetWatchdog mới chạy được. Nếu máy đang khóa, ứng dụng "
                     "được mở sau khi bạn mở khóa. Bật Tự đăng nhập Windows ở trên để máy vào thẳng màn hình làm việc.")
@@ -1600,6 +1620,22 @@ class SettingsApp(tk.Tk):
         (messagebox.showinfo if ok else messagebox.showerror)("Tự đăng nhập", msg)
         self.autologon_refresh()
 
+    def _remote_pin_label(self):
+        has = bool(self.rc_new_pin or self.cfg["remote"].get("pin_hash"))
+        self.rc_pin_status.config(text=("Đã đặt" + (" (chưa lưu)" if self.rc_new_pin else "")) if has else "Chưa đặt",
+                                  fg=self.c["success"] if has else self.c["danger"])
+
+    def remote_set_pin(self):
+        import remote
+        pin = self.rc_pin.get().strip()
+        self.rc_pin.set("")
+        if len(pin) < 6:
+            messagebox.showwarning("Mã PIN", "Mã PIN cần ít nhất 6 ký tự.")
+            return
+        self.rc_new_pin = remote.hash_pin(pin)
+        self._remote_pin_label()
+        self.mark_dirty()
+
     def autologon_off(self):
         if not messagebox.askyesno("Tự đăng nhập", "Tắt tự đăng nhập và xóa mật khẩu đã lưu?"):
             return
@@ -1642,6 +1678,11 @@ class SettingsApp(tk.Tk):
                             bad_checks=max(1, self._int("q_bad", 3)), standby_wifi=self.vars["q_standby"].get())
         c["presence"].update(auto_lock=self.vars["pr_lock"].get(), idle_lock_min=max(1, self._int("pr_idle", 5)),
                              local_input_alert=self.vars["pr_alert"].get(), screenshot=self.vars["pr_shot"].get())
+        c["remote"].update(enabled=self.vars["rc_on"].get(), session_min=max(1, self._int("rc_session", 10)))
+        if self.rc_new_pin:
+            c["remote"]["pin_hash"], c["remote"]["pin_salt"] = self.rc_new_pin
+            self.rc_new_pin = None
+            self._remote_pin_label()
         c["launch_apps"] = self.launch_mode.get()
         c["launch"].update(wait_unlock=self.vars["launch_unlock"].get(), delay_sec=self._int("launch_delay", 60))
         c["jxtd"].update(
