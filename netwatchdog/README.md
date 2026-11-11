@@ -67,6 +67,24 @@ Bật ở trang **Khởi động lại & Ứng dụng → Tự đăng nhập Win
 - Khi máy đang khóa, thao tác trên màn hình khóa không đọc được; lần thao tác đầu tiên sau khi mở khóa tại máy sẽ được phát hiện.
 - `/status` có dòng trạng thái khóa máy và lần thao tác tại máy gần nhất.
 
+### Điều khiển máy qua Telegram (khẩn cấp)
+
+Dùng khi mạng quá chậm cho UltraViewer/RustDesk: mỗi lệnh chỉ gửi về **một ảnh JPEG nhỏ** (~100–200 KB) nên vẫn dùng được trên đường truyền rất tệ. Không xem trực tiếp liên tục được, chỉ "bấm → xem ảnh → bấm tiếp", hợp để cứu máy (đóng hộp thoại, mở lại ứng dụng), không hợp để làm việc lâu.
+
+Bật ở trang **Khởi động lại & Ứng dụng → Điều khiển máy qua Telegram** (mặc định tắt), đặt **mã PIN** (ít nhất 6 ký tự), bấm **Lưu**.
+
+- Gửi `/dk <mã PIN>`: mở phiên điều khiển, bot gửi ảnh màn hình có **lưới ô** (cột A, B, C…, hàng 1, 2, 3…) và dấu ✚ đỏ ở vị trí chuột. Tin chứa mã PIN bị xóa ngay khỏi chat.
+- `/c D4`: bấm chuột trái giữa ô D4. Ô con theo bố cục bàn phím điện thoại (1 = trên trái, 5 = giữa, 9 = dưới phải): `/c D4 7`, càng nhiều chữ số càng chính xác (`/c D4 75`). `/c 640 380`: bấm theo tọa độ điểm ảnh. `/cp D4`: chuột phải. `/c2 D4`: bấm đúp.
+- `/zoom D4`: ảnh phóng to ô D4 có đánh số ô con 1–9, để chọn nút nhỏ chính xác.
+- `/go <chữ>`: gõ chữ (có dấu được). `/phim enter`, `/phim ctrl+c`, `/phim alt+f4`, `/phim tab tab enter`. `/cuon xuong 3`, `/cuon len`.
+- Sau mỗi thao tác bot gửi lại ảnh mới, kèm nút **Làm mới, Enter, Esc, Tab, Cuộn lên/xuống, Xóa, Kết thúc**. `/mh`: chụp lại màn hình.
+- Phiên **tự tắt sau 10 phút** không có lệnh (`/dk_tat` để tắt ngay). Trong phiên, máy không tự khóa.
+- **Bảo mật**: chỉ nhận lệnh từ Chat ID đã cấu hình, trong chat riêng (không nhận trong nhóm). Mã PIN lưu dạng băm (PBKDF2), không lưu nguyên văn. **Sai PIN 5 lần: khóa tính năng 1 giờ** và gửi cảnh báo. Mọi thao tác được ghi log (chữ gõ chỉ ghi số ký tự). Ảnh màn hình đi qua máy chủ Telegram.
+- **Giới hạn**: khi **máy đang khóa** hoặc cửa sổ UAC đang mở, Windows không cho chương trình chụp hay bấm vào màn hình bảo mật, nên phải mở khóa bằng RustDesk/UltraViewer trước. Windows cũng không cho gửi `Ctrl+Alt+Del` (dùng `/phim ctrl+shift+esc` để mở Task Manager).
+- Thao tác qua Telegram là thao tác giả lập, không bị báo "thao tác trực tiếp tại máy".
+
+**Điều khiển dự phòng: RustDesk.** Để có đường thứ hai bên cạnh UltraViewer, máy dùng **RustDesk** (miễn phí, mã nguồn mở, có app Android/iOS dễ dùng). RustDesk chạy dạng dịch vụ Windows nên thấy được màn hình khóa và gõ được mật khẩu mở khóa. Trong RustDesk trên máy: **Cài đặt → Bảo mật → Mật khẩu → Dùng mật khẩu cố định**, đặt mật khẩu riêng; trên điện thoại cài app RustDesk, nhập ID của máy và mật khẩu đó.
+
 ### Mạng chậm: tự chuyển card
 
 Kiểm tra "có mạng hay không" không phát hiện được mạng **rất chậm nhưng vẫn kết nối được**. Windows lại luôn ưu tiên card có dây, nên dù các card Wi-Fi đang tốt, mọi thứ vẫn đi qua đường chậm.
@@ -95,6 +113,7 @@ Bot chỉ nhận lệnh từ đúng Chat ID đã cấu hình. Gửi `/start` ho�
 |---|---|
 | `/status` | Báo cáo tình trạng máy (kèm chất lượng từng card mạng, trạng thái khóa máy) |
 | `/lock` | Khóa máy ngay |
+| `/dk <mã PIN>` | Mở phiên điều khiển máy qua Telegram (khi đã bật trong Cài đặt). Trong phiên: `/mh`, `/c`, `/cp`, `/c2`, `/zoom`, `/go`, `/phim`, `/cuon`, `/dk_tat` (xem [Điều khiển máy qua Telegram](#điều-khiển-máy-qua-telegram-khẩn-cấp)) |
 | `/net` | Chất lượng từng card mạng. `/net <tên card>` (vd. `/net wi-fi 3`): ưu tiên card đó ngay |
 | `/apps` | Mở các ứng dụng đã chọn |
 | `/fix` | Chạy quy trình khôi phục mạng ngay |
@@ -164,6 +183,7 @@ Build trên máy: cài Inno Setup 6 (`choco install innosetup`) và `pip install
 |---|---|
 | `app.py` | Điểm vào của `NetWatchdog.exe`: mở Cài đặt, `--service` chạy nền, `--install-task` / `--uninstall-task` |
 | `netwatchdog.py` | Vòng lặp theo dõi, quy trình khôi phục, Telegram (gửi + hàng đợi + lệnh), báo cáo |
+| `remote.py` | Điều khiển máy qua Telegram: ảnh màn hình có lưới ô (JPEG qua GDI+), bấm chuột, gõ phím (SendInput), mã PIN và phiên |
 | `presence.py` | Tự khóa máy khi không có người dùng; phát hiện thao tác chuột/bàn phím thật tại máy (Raw Input) |
 | `netquality.py` | Mạng chậm: đo từng card mạng (độ trễ, tốc độ), tự đổi interface metric sang card tốt hơn, giữ Wi-Fi dự phòng |
 | `jxtd.py` | Theo dõi nhân vật jxtdAuto: đọc bảng qua UI Automation, lịch sử CSV, cảnh báo |
